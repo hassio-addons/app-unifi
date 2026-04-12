@@ -113,7 +113,7 @@ you can manually adopt a device by following these steps:
 - Due to security policies in the UniFi Network Application software, it is
   currently impossible to add the UniFI web interface to your Home Assistant
   frontend using a `panel_iframe`.
-- The broadcast feature of the EDU type APs are currently not working with
+- The broadcast feature of the EDU-type APs are currently not working with
   this app. Due to a limitation in Home Assistant, is it currently impossible
   to open the required "range" of ports needed for this feature to work.
 - This app cannot support Ingress due to technical limitations of the
