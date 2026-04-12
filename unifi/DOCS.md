@@ -94,6 +94,15 @@ you can manually adopt a device by following these steps:
 - `$ set-inform http://<IP of Hassio>:<controller port (default:8080)>/inform`
   - for example `$ set-inform http://192.168.1.14:8080/inform`
 
+## Future of this app
+
+**The standalone UniFi Network Application is approaching end-of-life.**
+Ubiquiti is transitioning to UniFi OS Server, a multi-container architecture
+based on podman and systemd that does not translate to a Docker/Home Assistant
+app. This app will continue to work as long as Ubiquiti ships the standalone
+application, but there is no upgrade path from this app to UniFi OS Server.
+Users planning long-term should consider migrating to a dedicated machine or VM.
+
 ## Known issues and limitations
 
 - The AP seems stuck in "adopting" state: Please read the installation

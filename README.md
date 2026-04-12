@@ -30,6 +30,11 @@ allows you to manage your UniFi network via the web browser. The app
 provides a single-click installation and run solution for Home Assistant,
 allowing users to get their network up, running, and updated, easily.
 
+**Note:** The standalone UniFi Network Application is approaching end-of-life.
+Ubiquiti is transitioning to UniFi OS Server, which does not translate to a
+Docker/Home Assistant app. There is no upgrade path from this app to UniFi OS
+Server. See the [documentation][docs] for details.
+
 [:books: Read the full app documentation][docs]
 
 ## Support
