@@ -33,7 +33,7 @@ RUN \
         temurin-25-jre \
     \
     && curl -J -L -o /tmp/unifi.deb \
-        "https://dl.ui.com/unifi/10.2.105/unifi_sysvinit_all.deb" \
+        "https://dl.ui.com/unifi/10.5.67/unifi_sysvinit_all.deb" \
     \
     && dpkg --install /tmp/unifi.deb \
     \
