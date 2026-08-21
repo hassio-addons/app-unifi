@@ -1,0 +1,56 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": ["helpers:pinGitHubActionDigests"],
+  "rebaseWhen": "behind-base-branch",
+  "dependencyDashboard": true,
+  "labels": ["dependencies"],
+  "commitMessagePrefix": "⬆️",
+  "commitMessageTopic": "{{depName}}",
+  "customManagers": [
+    {
+      "customType": "regex",
+      "managerFilePatterns": ["//Dockerfile$/", "//build.yaml$/"],
+      "matchStringsStrategy": "any",
+      "matchStrings": [
+        "ARG BUILD_FROM=(?<depName>.*?):(?<currentValue>.*?)\\s+",
+        "(aarch64|amd64):\\s[\"']?(?<depName>.*?):(?<currentValue>.*?)[\"']?\\s"
+      ],
+      "datasourceTemplate": "docker"
+    },
+    {
+      "customType": "regex",
+      "managerFilePatterns": ["//Dockerfile$/"],
+      "matchStringsStrategy": "any",
+      "matchStrings": [
+        "\\s\\s(?<package>[a-z0-9][a-z0-9-]+)=(?<currentValue>[a-z0-9-:_+~.]+)\\s+"
+      ],
+      "versioningTemplate": "deb",
+      "datasourceTemplate": "deb",
+      "depNameTemplate": "{{{package}}}"
+    }
+  ],
+  "packageRules": [
+    {
+      "matchDatasources": ["deb"],
+      "registryUrls": [
+        "https://archive.ubuntu.com/ubuntu?suite=focal&components=main,restricted,universe,multiverse&binaryArch=amd64",
+        "https://archive.ubuntu.com/ubuntu?suite=focal-updates&components=main,restricted,universe,multiverse&binaryArch=amd64",
+        "https://archive.ubuntu.com/ubuntu?suite=focal-backports&components=main,restricted,universe,multiverse&binaryArch=amd64",
+        "https://security.ubuntu.com/ubuntu?suite=focal-security&components=main,restricted,universe,multiverse&binaryArch=amd64"
+      ],
+      "automerge": true
+    },
+    {
+      "groupName": "App base image",
+      "matchDatasources": ["docker"],
+      "matchDepNames": ["ghcr.io/hassio-addons/ubuntu-base"]
+    },
+    {
+      "groupName": "App base image",
+      "matchDatasources": ["docker"],
+      "matchUpdateTypes": ["minor", "patch"],
+      "matchDepNames": ["ghcr.io/hassio-addons/ubuntu-base"],
+      "automerge": true
+    }
+  ]
+}
