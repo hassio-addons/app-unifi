@@ -6,6 +6,15 @@
   "labels": ["dependencies"],
   "commitMessagePrefix": "⬆️",
   "commitMessageTopic": "{{depName}}",
+  "customDatasources": {
+    "unifi": {
+      "defaultRegistryUrlTemplate": "https://fw-update.ubnt.com/api/firmware-latest?filter=eq~~product~~unifi-controller&filter=eq~~channel~~release",
+      "format": "json",
+      "transformTemplates": [
+        "{ \"releases\": [$distinct($._embedded.firmware.$substringBefore($substringAfter(version, \"v\"), \"+\")) ~> $map(function($v) { { \"version\": $v } })] }"
+      ]
+    }
+  },
   "customManagers": [
     {
       "customType": "regex",
@@ -27,6 +36,16 @@
       "versioningTemplate": "deb",
       "datasourceTemplate": "deb",
       "depNameTemplate": "{{{package}}}"
+    },
+    {
+      "customType": "regex",
+      "managerFilePatterns": ["//Dockerfile$/"],
+      "matchStrings": [
+        "https://dl\\.ui\\.com/unifi/(?<currentValue>.*?)/unifi_sysvinit_all\\.deb"
+      ],
+      "depNameTemplate": "unifi",
+      "datasourceTemplate": "custom.unifi",
+      "versioningTemplate": "semver"
     }
   ],
   "packageRules": [
@@ -51,6 +70,10 @@
       "matchUpdateTypes": ["minor", "patch"],
       "matchDepNames": ["ghcr.io/hassio-addons/ubuntu-base"],
       "automerge": true
+    },
+    {
+      "matchDatasources": ["custom.unifi"],
+      "commitMessageTopic": "UniFi Network Application"
     }
   ]
 }
