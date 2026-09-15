@@ -1,0 +1,28 @@
+#!/command/with-contenv bashio
+# shellcheck shell=bash
+# ==============================================================================
+# Home Assistant Community App: UniFi Network Application
+# Surface an unexpected exit of the ingress sidebar proxy (nginx) WITHOUT taking
+# the S6 supervision tree down.
+#
+# The sibling `unifi` service's finish halts the whole tree on failure, because
+# the UniFi app on 8443 is the reason this app exists. The inline sidebar is a
+# convenience layered on top: nginx dying must never take 8443 down with it. So
+# this deliberately does not halt — it logs loudly and lets S6 restart nginx,
+# keeping the sidebar self-healing while making a persistent failure visible in
+# the log rather than a silent restart loop.
+# ==============================================================================
+readonly exit_code_service="${1}"
+readonly exit_code_signal="${2}"
+readonly service="UniFi ingress sidebar proxy"
+
+# 256 means the service was terminated by a signal; signal 15 (SIGTERM) is the
+# normal shutdown path, so stay quiet and let the container come down cleanly.
+if [[ "${exit_code_service}" -eq 256 && "${exit_code_signal}" -eq 15 ]]; then
+    exit 0
+fi
+
+bashio::log.warning \
+    "Service ${service} exited unexpectedly" \
+    "(code ${exit_code_service}, signal ${exit_code_signal}); S6 will restart it." \
+    "The UniFi UI on port 8443 is unaffected; only the sidebar view is briefly interrupted."

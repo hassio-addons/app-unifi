@@ -4,7 +4,10 @@ version: dev
 slug: unifi
 description: Manage your UniFi network using a web browser
 url: https://github.com/hassio-addons/app-unifi
-webui: https://[HOST]:[PORT:8443]
+ingress: true
+ingress_stream: true
+panel_icon: mdi:radiobox-marked
+panel_title: UniFi
 startup: services
 arch:
   - aarch64

@@ -26,6 +26,25 @@ comparison to installing any other Home Assistant app.
 1. Hit the "Apply Changes" button to activate the settings.
 1. Ready to go!
 
+## Show in sidebar
+
+Use the "Show in sidebar" toggle on the app's Info tab to add a "UniFi" entry to
+the Home Assistant sidebar, so you can open UniFi in one click instead of going
+through the app's page. Because this app uses ingress, the "OPEN WEB UI" button
+opens this inline sidebar view rather than the port-8443 interface. Port 8443 is
+still published and behaves exactly as before; you reach it by browsing to
+`https://<host>:8443` directly rather than through that button. Remote access via
+unifi.ui.com is unchanged.
+
+The sidebar view also works in the Home Assistant mobile companion app, over
+HTTPS or a plain-HTTP address. In the companion app, UniFi shows a dismissable
+"browser not supported" notice (it does not recognize the in-app browser); it is
+cosmetic and the interface works.
+
+If a future UniFi version changes the app's internal paths, the sidebar view may
+render incorrectly until the app is updated; the log warns when this happens,
+and the direct interface on 8443 is never affected.
+
 ## Configuration
 
 **Note**: _Remember to restart the app when the configuration is changed._
@@ -125,8 +144,6 @@ Users planning long-term should consider migrating to a dedicated machine or VM.
 - The broadcast feature of the EDU-type APs are currently not working with
   this app. Due to a limitation in Home Assistant, is it currently impossible
   to open the required "range" of ports needed for this feature to work.
-- This app cannot support Ingress due to technical limitations of the
-  UniFi software.
 - During making a backup of this app via Home Assistant, this app will
   temporary shutdown and start up after the backup has finished. This prevents
   data corruption during taking the backup.

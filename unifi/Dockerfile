@@ -1,4 +1,4 @@
-ARG BUILD_FROM=ghcr.io/hassio-addons/ubuntu-base:8.2.1
+ARG BUILD_FROM=ghcr.io/hassio-addons/ubuntu-base:8.2.0
 # hadolint ignore=DL3006
 FROM ${BUILD_FROM}
 
@@ -28,12 +28,19 @@ RUN \
         libcap2=1:2.32-1ubuntu0.2 \
         logrotate=3.14.0-4ubuntu3 \
         mongodb-server=1:3.6.9+really3.6.8+90~g8e540c0b6d-0ubuntu5.3 \
+        nginx-extras=1.18.0-0ubuntu1.7 \
     \
     && apt-get install -y --no-install-recommends \
         temurin-25-jre \
     \
     && curl -J -L -o /tmp/unifi.deb \
         "https://dl.ui.com/unifi/10.6.106/unifi_sysvinit_all.deb" \
+    \
+    # Verify the package against Ubiquiti's published SHA256 for this release
+    # (community.ui.com release page for 10.6.101). The build fails loudly if the
+    # download does not match, e.g. a tampered, MITM'd, or truncated artifact.
+    && echo "b5ab809c2680b7ec22106ef19c7942f1fa343338c3eed1829303d95b2ce4fdd7  /tmp/unifi.deb" \
+        | sha256sum --check \
     \
     && dpkg --install /tmp/unifi.deb \
     \
@@ -77,6 +84,33 @@ RUN \
     && verify_bytes "${AARCH64_LIB}" $((0x167D20)) 4 "1f2003d5" "aarch64 post-patch site 2" \
     && verify_bytes "${X86_64_LIB}"  $((0x114CB9)) 5 "9090909090" "x86_64 post-patch site 1" \
     && verify_bytes "${X86_64_LIB}"  $((0x1157D7)) 5 "9090909090" "x86_64 post-patch site 2" \
+    \
+    # Patch base.js: fix a latent bug in UniFi's fetch-response adapter that
+    # crashes the Angular login route in the mobile companion app (the inline
+    # ingress UI shows a "400" page while desktop works). The adapter builds a
+    # header map with:
+    #   Array.from(resp.headers).reduce(function(e,t){return(e[t[0]]=t[1])&&e},{})
+    # The "&&e" returns the accumulator only when the header value is truthy. An
+    # empty-valued response header collapses the accumulator to "", so the next
+    # header assignment writes to a string primitive, which strict mode rejects
+    # with "Attempted to assign to readonly property" in any compliant JS engine.
+    # That fails the route resolve and lands the SPA on /manage/fatal ("400").
+    # Reproduced and patch-verified on iOS WebKit; desktop never hit it because
+    # the responses it saw had no empty-valued header in a non-final position.
+    # The bug is engine-agnostic, so this also covers the Android companion app's
+    # WebView if it receives the same response. Switching "&&" to a comma makes
+    # the reduce always return the accumulator object regardless of header values.
+    # The bundle filename carries a per-release hash but this callback is a
+    # content literal that survives renames; the count check fails the build
+    # loudly if UniFi ever changes the code so the patch can be re-derived.
+    && BASE_JS="$(ls /usr/lib/unifi/webapps/ROOT/app-unifi/angular/*/js/base.js)" \
+    && BEFORE="$(grep -cF '(e[t[0]]=t[1])&&e' "${BASE_JS}" || true)" \
+    && if [ "${BEFORE}" != "1" ]; then echo "FAIL: base.js header-map reduce: expected 1 occurrence, found ${BEFORE} (UniFi bundle changed; re-derive patch)" >&2; exit 1; fi \
+    && sed -i 's/(e\[t\[0]]=t\[1])&&e/(e[t[0]]=t[1]),e/' "${BASE_JS}" \
+    && AFTER_BUGGY="$(grep -cF '(e[t[0]]=t[1])&&e' "${BASE_JS}" || true)" \
+    && AFTER_FIXED="$(grep -cF '(e[t[0]]=t[1]),e' "${BASE_JS}" || true)" \
+    && if [ "${AFTER_BUGGY}" != "0" ] || [ "${AFTER_FIXED}" != "1" ]; then echo "FAIL: base.js header-map reduce patch did not land (buggy=${AFTER_BUGGY} fixed=${AFTER_FIXED})" >&2; exit 1; fi \
+    && echo "OK: patched base.js header-map reduce in ${BASE_JS}" \
     \
     && apt-get clean \
     && rm -fr \
