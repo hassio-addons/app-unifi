@@ -1,0 +1,58 @@
+#!/command/with-contenv bashio
+# shellcheck shell=bash
+# ==============================================================================
+# Home Assistant Community App: UniFi Network Application
+# Runs the nginx reverse proxy that renders the UniFi UI in the HA sidebar
+# ==============================================================================
+
+bashio::log.info \
+    'Starting ingress proxy: the UniFi UI is available in the Home Assistant sidebar.'
+ln -sf /etc/nginx/ingress-proxy.conf /etc/nginx/active-server.conf
+
+# Ingress base-path canary. The proxy rewrites a set of content literals in the
+# UniFi bundles so the SPA works behind HA's path prefix. The literals are stable
+# across bundle-hash renames, but a new UniFi version could change them. To keep
+# this check honest, the watched set is derived from ingress-proxy.conf itself
+# (every sub_filter match string, single- or double-quoted), not a hand-maintained
+# copy that could silently drift out of sync with the actual rewrites. If a
+# rewrite target is missing from the bundles, warn loudly: the sidebar UI may
+# break, but direct-port access on 8443 is unaffected.
+readonly WEBAPP="/usr/lib/unifi/webapps/ROOT/app-unifi"
+readonly PROXY_CONF="/etc/nginx/ingress-proxy.conf"
+# Two expressions so a future double-quoted sub_filter rule is caught too: a
+# single negated class can't span both quote styles (the match strings contain
+# the other quote char), and it must be the delimiter quote that bounds the
+# capture. Order-independent; each line matches exactly one expression.
+mapfile -t ingress_literals < <(
+    sed -nE \
+        -e "s/^[[:space:]]*sub_filter[[:space:]]+'([^']*)'.*/\1/p" \
+        -e 's/^[[:space:]]*sub_filter[[:space:]]+"([^"]*)".*/\1/p' \
+        "${PROXY_CONF}"
+)
+if [ "${#ingress_literals[@]}" -eq 0 ]; then
+    bashio::log.warning \
+        "Ingress canary: no sub_filter rules found in ${PROXY_CONF}; base-path rewrites cannot be verified."
+fi
+for literal in "${ingress_literals[@]}"; do
+    if ! grep -rqF "${literal}" "${WEBAPP}" 2>/dev/null; then
+        bashio::log.warning \
+            "Ingress canary: rewrite target not found in UniFi bundles -> [${literal}]." \
+            "The sidebar UI may render incorrectly; ingress-proxy.conf needs updating for this UniFi version."
+    fi
+done
+
+# Wait for UniFi to accept connections on 8443 before starting the proxy, so the
+# sidebar serves the app (or its boot splash) instead of a 502 while the
+# controller is still starting. Bounded: if UniFi is slow or down we start anyway
+# and a 502 is then the honest signal rather than a hang. curl exits 0 as soon as
+# 8443 answers any HTTP status, non-zero while the connection is still refused.
+readonly UNIFI_LOCAL="https://127.0.0.1:8443"
+if ! curl -sk -o /dev/null --max-time 2 "${UNIFI_LOCAL}"; then
+    bashio::log.info "Waiting for UniFi on 8443 before starting the ingress sidebar proxy..."
+    for _ in $(seq 1 300); do
+        curl -sk -o /dev/null --max-time 2 "${UNIFI_LOCAL}" && break
+        sleep 1
+    done
+fi
+
+exec nginx
