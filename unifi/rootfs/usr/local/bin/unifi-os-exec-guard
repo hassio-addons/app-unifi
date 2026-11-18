@@ -1,0 +1,56 @@
+#!/bin/bash
+# Refuse to start a vendor service unless its executable, and every directory
+# on the way to it (literal and resolved path), is root-owned and not group-
+# or other-writable. Otherwise a non-root user could have replaced the binary
+# that root, or the vendor service, later executes.
+set -euo pipefail
+unset SUPERVISOR_TOKEN HASSIO_TOKEN
+
+fail() {
+    echo "UniFi OS executable guard refused ${executable}: $*" >&2
+    /usr/local/bin/unifi-os-alert vendor_binary_untrusted "UniFi OS program files are not trusted" \
+        "A UniFi OS program file or directory ($*) is not owned and protected by root, so the service was not started. The files may have been replaced from inside the nested runtime. Restore a backup of this app." || true
+    exit 1
+}
+
+check() {
+    local path=$1 last=$2 owner mode type
+    read -r owner mode type < <(stat -c '%u %a %F' -- "${path}") \
+        || fail "${path} is missing"
+    [[ "${owner}" == 0 ]] || fail "${path} is not owned by root"
+    case "${type}" in
+        "symbolic link") return 0 ;;
+        directory) ;;
+        "regular file") [[ "${last}" == true ]] || fail "${path} is not a directory" ;;
+        *) fail "${path} has unexpected type ${type}" ;;
+    esac
+    (( (8#${mode} & 8#022) == 0 )) || fail "${path} is writable by group or others"
+    if [[ "${last}" == true ]]; then
+        [[ "${type}" == "regular file" && -x "${path}" ]] || fail "${path} is not an executable file"
+    fi
+}
+
+walk() {
+    local path=$1 prefix="" component last index
+    local -a components
+    IFS=/ read -r -a components <<< "${path#/}"
+    check / false
+    for ((index = 0; index < ${#components[@]}; index++)); do
+        component=${components[index]}
+        [[ -n "${component}" && "${component}" != . && "${component}" != .. ]] \
+            || fail "${path} is not a normalized absolute path"
+        prefix+="/${component}"
+        last=false
+        (( index + 1 < ${#components[@]} )) || last=true
+        check "${prefix}" "${last}"
+    done
+}
+
+[[ $# -ge 1 ]] || { echo "Usage: unifi-os-exec-guard EXECUTABLE..." >&2; exit 2; }
+for executable in "$@"; do
+    [[ "${executable}" == /* ]] || fail "not an absolute path"
+    resolved=$(readlink -e -- "${executable}") || fail "${executable} is missing"
+    for path in "${executable}" "${resolved}"; do
+        walk "${path}"
+    done
+done

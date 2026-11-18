@@ -1,0 +1,21 @@
+[Unit]
+# App-owned mount-only unit; the real Network service is inside Podman.
+Description=Legacy UniFi layout service (bind mount only, no controller process)
+ConditionPathExists=/var/lib/unifi-os-app/unifi/data/system.properties
+Before=unifi-os-bootstrap.service uosserver-updater.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/unifi-os-legacy-layout
+RemainAfterExit=yes
+# The bind mount must land in PID 1's namespace, so no mount-namespace
+# sandboxing. Keep only what the mount and reading root-unowned legacy data
+# need (the old app may have left it unreadable without DAC overrides).
+CapabilityBoundingSet=CAP_SYS_ADMIN CAP_DAC_OVERRIDE CAP_DAC_READ_SEARCH
+NoNewPrivileges=yes
+SystemCallArchitectures=native
+LockPersonality=yes
+RestrictRealtime=yes
+
+[Install]
+WantedBy=multi-user.target

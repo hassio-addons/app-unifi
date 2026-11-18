@@ -1,0 +1,22 @@
+#!/bin/bash
+# App-owned compatibility launcher, not a patched vendor executable.
+set -euo pipefail
+
+# Provide the vendor's binary path using the retained database's runtime.
+# Perform no conversion, backup or restore here.
+version=3.6
+selection=/var/lib/unifi-os-app/mongo-runtime
+[[ ! -e "${selection}" ]] || version=$(cat "${selection}")
+
+# The old app recorded MMAPv1 tuning (unifi.db.extraargs=--smallfiles) in
+# system.properties. MongoDB 4.2 removed MMAPv1 and refuses to start with that
+# switch, so drop it here instead of editing the retained configuration.
+# --nojournal is still accepted by 4.2/4.4 and is passed through unchanged.
+arguments=()
+for argument in "$@"; do
+    case "${version}:${argument}" in
+        4.2:--smallfiles|4.2:--smallfiles=*|4.4:--smallfiles|4.4:--smallfiles=*) ;;
+        *) arguments+=("${argument}") ;;
+    esac
+done
+exec /usr/local/bin/unifi-os-mongo "${version}" mongod ${arguments[@]+"${arguments[@]}"}

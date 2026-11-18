@@ -1,0 +1,18 @@
+[Unit]
+Description=Initialize persistent UniFi OS Server installation
+Wants=network.target systemd-logind.service
+After=network.target systemd-logind.service
+# Report the failure, then stop the container so Supervisor shows it.
+OnFailure=unifi-os-fatal.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/unifi-os-bootstrap
+RemainAfterExit=yes
+TimeoutStartSec=2700
+# No extra sandboxing: the trusted vendor installer needs root with every
+# capability and mounts, and the nested OS it may start inherits any seccomp
+# filter (RestrictSUIDSGID= would break set-ID files inside the vendor OS).
+
+[Install]
+WantedBy=multi-user.target

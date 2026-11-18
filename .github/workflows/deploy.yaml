@@ -21,8 +21,16 @@ jobs:
       security-events: write
     uses: hassio-addons/workflows/.github/workflows/app-ci.yaml@adec4b96071354cc44924a6ef9975ff60cf9ddd9 # v5.0.0
 
+  candidate:
+    name: UniFi OS candidate checks
+    permissions:
+      contents: read
+    uses: ./.github/workflows/unifi-os-candidate.yaml
+
   deploy:
-    needs: ci
+    needs:
+      - ci
+      - candidate
     permissions:
       contents: read
       packages: write

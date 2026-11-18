@@ -1,0 +1,39 @@
+[Unit]
+# App-owned unit.
+Description=Forward UniFi OS journal to Home Assistant app logs
+After=systemd-journald.service
+
+[Service]
+# PID 1 starts with --log-target=null so it never falls back to the host's
+# /dev/console. Once journald runs, send its notices, warnings and unit
+# failures to the journal for forwarding ("+": these two need privileges).
+ExecStartPre=+/usr/bin/systemctl log-target journal
+ExecStartPre=+/usr/bin/systemctl log-level notice
+ExecStart=/usr/local/bin/unifi-os-log
+# Do not use /dev/console: Supervisor mounts the host's /dev into apps.
+StandardOutput=append:/run/unifi-os-log.pipe
+StandardError=append:/run/unifi-os-log.pipe
+Restart=on-failure
+# Root reads the root-owned volatile journal and options without any
+# capability; nothing here needs to write or reach the network.
+CapabilityBoundingSet=
+AmbientCapabilities=
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+# Same redundant-sandbox adaptation as the capability-free port aliases.
+ProtectKernelTunables=no
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictNamespaces=yes
+RestrictAddressFamilies=AF_UNIX
+SystemCallArchitectures=native
+LockPersonality=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+MemoryDenyWriteExecute=yes
+
+[Install]
+WantedBy=multi-user.target

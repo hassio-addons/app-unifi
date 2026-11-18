@@ -1,0 +1,35 @@
+[Unit]
+Description=Notify Home Assistant when UniFi vendor setup is required
+Wants=unifi-os-bootstrap.service
+After=network.target unifi-os-bootstrap.service
+ConditionPathExists=/run/unifi-ha-api/token
+
+[Service]
+Type=exec
+ExecStart=/usr/bin/python3 /usr/share/unifi-os/setup-notification.py
+LoadCredential=ha-api-token:/run/unifi-ha-api/token
+# Remain capability-free while watching setup. API-failure retries are bounded
+# by the reporter; a failed observation budget retries without blocking boot.
+Restart=on-failure
+RestartSec=60
+DynamicUser=yes
+NoNewPrivileges=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
+PrivateDevices=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=yes
+# Same redundant-sandbox adaptation as the capability-free port aliases.
+ProtectKernelTunables=no
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictNamespaces=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+SystemCallArchitectures=native
+LockPersonality=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+
+[Install]
+WantedBy=multi-user.target

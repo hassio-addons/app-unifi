@@ -7,21 +7,40 @@ configuration:
   memory_max:
     name: Memória máxima
     description: >-
-      Esta opção permite que você altere a quantidade máxima de memória
-      consumida pela UniFi Network Application.
+      Memória Java máxima (heap), em MB, do aplicativo UniFi Network dentro do
+      UniFi OS. Deixe vazio para usar o padrão da Ubiquiti. Não limita o UniFi
+      OS como um todo.
   memory_init:
     name: Memória inicial
     description: >-
-      Esta opção permite que você altere a quantidade máxima de memória
-      reservada/consumida na inicialização da UniFi Network Application.
+      Memória Java inicial (heap), em MB, do aplicativo UniFi Network dentro do
+      UniFi OS. Não pode ser maior que a memória máxima. Deixe vazio para usar
+      o padrão da Ubiquiti.
+  ingress_allow_insecure_http:
+    name: Permitir ingress HTTP inseguro
+    description: >-
+      Desativado por padrão. Permite abrir o console UniFi dentro do Home
+      Assistant quando o Home Assistant é acessado por HTTP simples, removendo
+      a proteção Secure dos cookies de login do UniFi. Sua senha e sua sessão
+      do UniFi passam então sem criptografia. Use apenas em uma rede confiável;
+      HTTPS é fortemente recomendado. Não afeta o console HTTPS direto.
+      Reinicie o app após alterar.
 network:
-  161/udp: Utilizado para acesso SNMP
-  1900/udp: L2 discoverable port
-  3478/udp: Utilizado para STUN
-  5514/udp: Utilizado para depuração remota do syslog
-  6789/tcp: Utilizado para teste de velocidade do app UniFi
-  8080/tcp: Utilizado para comunicação do controlador com dispositivos
-  8443/tcp: Utilizado para interface web e API do controlador
-  8843/tcp: Utilizado para redirecionamento HTTPS do portal
-  8880/tcp: Utilizado para redirecionamento HTTP do portal
-  10001/udp: Utilizado para descoberta de dispositivos
+  161/udp: Mantida da versão anterior (SNMP); o app não adiciona serviço SNMP
+  1900/udp: Mantida da versão anterior (SSDP); o app não adiciona serviço SSDP
+  3478/udp: STUN
+  5514/udp: Syslog remoto dos dispositivos UniFi
+  5671/tcp: Outro serviço do UniFi OS
+  6789/tcp: Teste de velocidade do app UniFi
+  8080/tcp: Inform dos dispositivos (comunicação dos dispositivos com o controlador)
+  8443/tcp: Porta anterior do console (repassada ao console do UniFi OS, 11443/TCP)
+  8843/tcp: Porta anterior do portal de visitantes HTTPS (repassada para 8444/TCP)
+  8880/tcp: Portal de visitantes HTTP
+  8881/tcp: Outro serviço do UniFi OS
+  8882/tcp: Outro serviço do UniFi OS
+  9543/tcp: UniFi Identity Hub
+  10001/udp: Porta anterior de descoberta de dispositivos (repassada para 10003/UDP)
+  11443/tcp: Console do UniFi OS (interface web HTTPS)
+  8444/tcp: Portal de visitantes HTTPS
+  10003/udp: Descoberta de dispositivos do UniFi OS
+  28082/tcp: Outro serviço do UniFi OS

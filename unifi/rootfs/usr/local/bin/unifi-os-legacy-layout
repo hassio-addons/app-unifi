@@ -1,0 +1,32 @@
+#!/bin/bash
+# App-owned container adapter.
+set -euo pipefail
+
+# Optional paths are for isolated tests. The unit uses these fixed defaults.
+[[ $# -le 3 ]] || { echo "Expected source, target and storage-root paths only" >&2; exit 1; }
+source_dir=${1:-/var/lib/unifi-os-app/unifi/data}
+target=${2:-/lib/unifi/data}
+storage_root=${3:-/var/lib/unifi-os-app}
+
+[[ -d "${source_dir}" && -f "${source_dir}/system.properties" \
+    && -r "${source_dir}/system.properties" ]] \
+    || { echo "Legacy layout is incomplete; no mount created" >&2; exit 1; }
+[[ ! -L "${target}" ]] \
+    || { echo "Legacy target is a symlink; refusing replacement" >&2; exit 1; }
+[[ ! -e "${target}" || -d "${target}" ]] \
+    || { echo "Legacy target is not a directory" >&2; exit 1; }
+
+source_dir=$(readlink -f "${source_dir}")
+if [[ -d "${target}" ]] && mountpoint -q "${target}" \
+    && [[ "$(stat -c '%d:%i' "${target}")" == "$(stat -c '%d:%i' "${source_dir}")" ]]; then
+    echo "Legacy bind mount already ready."
+    exit 0
+fi
+if [[ -d "${target}" && -n "$(find "${target}" -mindepth 1 -maxdepth 1 -print -quit)" ]]; then
+    # Only overlay the known Supervisor storage-root mount, never unrelated data.
+    [[ -d "${storage_root}" && "$(stat -c '%d:%i' "${target}")" == "$(stat -c '%d:%i' "${storage_root}")" ]] \
+        || { echo "Legacy target contains unrelated data; refusing overlay" >&2; exit 1; }
+fi
+mkdir -p "${target}"
+mount --bind "${source_dir}" "${target}"
+echo "Legacy data bind mounted; no database process, export or restore was started."

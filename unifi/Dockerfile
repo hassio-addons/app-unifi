@@ -1,97 +1,100 @@
-ARG BUILD_FROM=ghcr.io/hassio-addons/ubuntu-base:8.2.1
-# hadolint ignore=DL3006
-FROM ${BUILD_FROM}
+FROM ghcr.io/hassio-addons/unifi:5.3.2@sha256:9b1b59e7fcbe4d3d016782a5f6120753cd8a20252270f99eb231c05e3f338495 AS legacy_runtime
+COPY build/collect-legacy-mongo-runtime /collect-legacy-mongo-runtime
+RUN bash /collect-legacy-mongo-runtime
 
-# Set shell
+FROM ubuntu:18.04@sha256:152dc042452c496007f07ca9127571cb9c29697f42acbfad72324b2bb2e43c98 AS upgrade_runtime
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
-
-# Setup base system
-# UniFi 10.1+ requires Java 25 — not in Ubuntu repos, use Eclipse Temurin.
-# Temurin is not version-pinned: Adoptium uses different build suffixes per
-# architecture (e.g. +10-1 on amd64 vs +10-0 on arm64), making a single
-# pinned version string impossible across all supported architectures.
-# hadolint ignore=DL3008
+# Ubuntu 18.04 is end-of-life, so these pins are final (Renovate skips them).
 RUN \
     apt-get update \
-    && apt-get upgrade -y \
     && apt-get install -y --no-install-recommends \
-        gpg=2.2.19-3ubuntu2.5 \
-    \
-    && curl -fsSL https://packages.adoptium.net/artifactory/api/gpg/key/public \
-        | gpg --dearmor -o /usr/share/keyrings/adoptium.gpg \
-    && echo "deb [signed-by=/usr/share/keyrings/adoptium.gpg] https://packages.adoptium.net/artifactory/deb focal main" \
-        > /etc/apt/sources.list.d/adoptium.list \
-    && apt-get update \
-    \
-    && apt-get install -y --no-install-recommends \
-        binutils=2.34-6ubuntu1.11 \
-        libcap2=1:2.32-1ubuntu0.2 \
-        logrotate=3.14.0-4ubuntu3 \
-        mongodb-server=1:3.6.9+really3.6.8+90~g8e540c0b6d-0ubuntu5.3 \
-    \
-    && apt-get install -y --no-install-recommends \
-        temurin-25-jre \
-    \
-    && curl -J -L -o /tmp/unifi.deb \
-        "https://dl.ui.com/unifi/10.6.109/unifi_sysvinit_all.deb" \
-    \
-    && dpkg --install /tmp/unifi.deb \
-    \
-    # Patch libubnt_webrtc_jni.so: strip the DONT-FRAGMENT (0x001A) attribute from
-    # TURN Allocate requests. Cloudflare's TURN relay rejects it with error 420
-    # (Unknown Attribute), breaking remote access via unifi.ui.com on all
-    # self-hosted controllers. The _all deb ships both arch libs, so we can patch
-    # both here regardless of build architecture.
-    # Expected MD5s are for the unmodified originals — build fails loudly if
-    # Ubiquiti ships a new library so offsets can be re-derived before proceeding.
-    && AARCH64_LIB="/usr/lib/unifi/lib/native/Linux/aarch64/libubnt_webrtc_jni.so" \
-    && X86_64_LIB="/usr/lib/unifi/lib/native/Linux/x86_64/libubnt_webrtc_jni.so" \
-    && echo "27e786235fae4a052bc808c3c13dfc19  ${AARCH64_LIB}" | md5sum --check \
-    && echo "657963ca47b185baf4eef8d90b70755b  ${X86_64_LIB}" | md5sum --check \
-    # Helper: verify byte sequence at offset in library matches expected hex string.
-    # On mismatch, emit a descriptive failure message and exit non-zero.
-    && verify_bytes() { \
-        local lib="$1" off="$2" count="$3" expect="$4" label="$5"; \
-        local actual; \
-        actual="$(dd if="${lib}" bs=1 skip=$((off)) count="${count}" 2>/dev/null | od -An -tx1 | tr -d ' \n')"; \
-        if [ "${actual}" != "${expect}" ]; then \
-            echo "FAIL: ${label} at $(printf '0x%X' "${off}"): expected ${expect}, got ${actual}" >&2; \
-            return 1; \
-        fi; \
-    } \
-    # Sanity-check target bytes before patching. Each offset must point to the
-    # opcode for "mov type, #0x1a" that precedes AppendFieldEmpty.
-    # aarch64: full 4-byte instruction 0x52800342 (mov w2, #0x1a), little-endian
-    # x86_64:  5-byte instruction 0xba 0x1a 0x00 0x00 0x00 (mov edx, 0x1a)
-    && verify_bytes "${AARCH64_LIB}" $((0x167214)) 4 "42038052" "aarch64 pre-patch site 1" \
-    && verify_bytes "${AARCH64_LIB}" $((0x167D20)) 4 "42038052" "aarch64 pre-patch site 2" \
-    && verify_bytes "${X86_64_LIB}"  $((0x114CB9)) 5 "ba1a000000" "x86_64 pre-patch site 1" \
-    && verify_bytes "${X86_64_LIB}"  $((0x1157D7)) 5 "ba1a000000" "x86_64 pre-patch site 2" \
-    # Apply the patches
-    && printf '\x1f\x20\x03\xd5' | dd of="${AARCH64_LIB}" bs=1 seek=$((0x167214)) count=4 conv=notrunc 2>/dev/null \
-    && printf '\x1f\x20\x03\xd5' | dd of="${AARCH64_LIB}" bs=1 seek=$((0x167D20)) count=4 conv=notrunc 2>/dev/null \
-    && printf '\x90\x90\x90\x90\x90' | dd of="${X86_64_LIB}" bs=1 seek=$((0x114CB9)) count=5 conv=notrunc 2>/dev/null \
-    && printf '\x90\x90\x90\x90\x90' | dd of="${X86_64_LIB}" bs=1 seek=$((0x1157D7)) count=5 conv=notrunc 2>/dev/null \
-    # Verify patches actually landed
-    && verify_bytes "${AARCH64_LIB}" $((0x167214)) 4 "1f2003d5" "aarch64 post-patch site 1" \
-    && verify_bytes "${AARCH64_LIB}" $((0x167D20)) 4 "1f2003d5" "aarch64 post-patch site 2" \
-    && verify_bytes "${X86_64_LIB}"  $((0x114CB9)) 5 "9090909090" "x86_64 post-patch site 1" \
-    && verify_bytes "${X86_64_LIB}"  $((0x1157D7)) 5 "9090909090" "x86_64 post-patch site 2" \
-    \
+        ca-certificates=20230311ubuntu0.18.04.1 \
+        curl=7.58.0-2ubuntu3.24 \
+        libcurl4=7.58.0-2ubuntu3.24 \
+        libssl1.0.0=1.0.2n-1ubuntu5.13 \
+        libssl1.1=1.1.1-1ubuntu2.1~18.04.23
+COPY build/collect-mongo-upgrade-runtimes /collect-mongo-upgrade-runtimes
+RUN bash /collect-mongo-upgrade-runtimes
+
+FROM ubuntu:26.04@sha256:065aa8626841f16057b78b027b464cd59c4fac36c204c72dcbf48d66f5fa8a96
+
+SHELL ["/bin/bash", "-o", "pipefail", "-c"]
+
+RUN \
+    apt-get update \
+    && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+        ca-certificates=20260816ubuntu0.26.04.2 \
+        curl=8.18.0-1ubuntu2.8 \
+        dbus=1.16.2-2ubuntu4 \
+        dbus-user-session=1.16.2-2ubuntu4 \
+        iproute2=6.19.0-1ubuntu1.1 \
+        jq=1.8.1-4ubuntu2 \
+        libnginx-mod-http-js=0.9.4-1build2 \
+        nginx=1.28.3-2ubuntu1.13 \
+        passt=0.0~git20260120.386b5f5-1 \
+        podman=5.7.0+ds2-3build1 \
+        procps=2:4.0.4-9ubuntu1 \
+        python3=3.14.3-0ubuntu2 \
+        slirp4netns=1.3.3-1 \
+        socat=1.8.1.1-1ubuntu0.1 \
+        systemd=259.9-0ubuntu0.1 \
+        systemd-sysv=259.9-0ubuntu0.1 \
+        uidmap=1:4.17.4-2ubuntu3 \
+        xz-utils=5.8.3-1ubuntu0.1 \
+    && groupadd --gid 1001 uosserver \
+    && useradd --uid 1001 --gid 1001 --home-dir /home/uosserver \
+        --no-create-home --shell /bin/bash uosserver \
+    && groupadd --system unifi \
+    && useradd --system --gid unifi --no-create-home \
+        --home-dir /usr/lib/unifi --shell /usr/sbin/nologin unifi \
+    && mkdir -p /var/lib/unifi-os-app /usr/lib/unifi/data \
+    && ln -s /var/lib/unifi-os-app/uos/home /home/uosserver \
+    && ln -s /var/lib/unifi-os-app/uos/state /var/lib/uosserver \
+    && mkdir -p /opt/unifi-os \
+    && case "$(dpkg --print-architecture)" in \
+        arm64) \
+            url="https://fw-download.ubnt.com/data/unifi-os-server/f730-linux-arm64-5.1.42-d2bca8bd-d6fc-4d20-99e5-b78235843c2f.42-arm64"; \
+            checksum="8e29bd50cde8f781ace4b85599256ef62c02723bdc751044d4db90a087fb5207" ;; \
+        amd64) \
+            url="https://fw-download.ubnt.com/data/unifi-os-server/5172-linux-x64-5.1.42-12e9e3cf-8f8b-4e54-928c-76b80a10c8a4.42-x64"; \
+            checksum="f6111e9396a42c74016f5dde9b01fbef486a6fe69efe137935e6e38b7c22f94d" ;; \
+        *) echo "Unsupported architecture" >&2; exit 1 ;; \
+    esac \
+    && curl -fLsS --retry 2 "${url}" -o /opt/unifi-os/installer \
+    && echo "${checksum}  /opt/unifi-os/installer" | sha256sum --check \
+    && chmod 0755 /opt/unifi-os/installer \
+    && echo "5.1.42" > /opt/unifi-os/version \
+    && systemctl mask systemd-modules-load.service systemd-udevd.service \
+        systemd-udevd-control.socket systemd-udevd-kernel.socket \
+        systemd-tmpfiles-setup-dev.service systemd-tmpfiles-setup-dev-early.service tmp.mount \
     && apt-get clean \
-    && rm -fr \
-        /tmp/* \
-        /var/cache/* \
-        /var/lib/apt/lists/* \
-        /var/log/*.log \
-        /var/log/apt
+    && rm -rf /var/lib/apt/lists/*
 
-# Copy root filesystem
+# Ubiquiti publishes no installer signature; the pinned SHA-256 values are the
+# recorded fingerprints of the official downloads. A changed file fails the build.
+COPY --from=legacy_runtime /legacy-runtime /opt/unifi-legacy-mongo
+COPY --from=upgrade_runtime /upgrade-runtimes /opt/unifi-mongo
 COPY rootfs /
+RUN chmod 0755 /usr/local/bin/unifi-os-* /usr/lib/unifi/bin/mongod \
+    && useradd --system --user-group --no-create-home --home-dir /nonexistent \
+        --shell /usr/sbin/nologin unifi-port \
+    && systemctl mask nginx.service console-getty.service getty.target getty@.service \
+        serial-getty@.service systemd-remount-fs.service systemd-pstore.service \
+    && systemctl enable unifi-os-bootstrap.service unifi-os-log.service unifi.service \
+        unifi-os-shutdown-checkpoint.service \
+        unifi-os-setup-notification.service \
+        unifi-os-alert-notification.service unifi-os-alerts.path \
+        unifi-os-setup-status.timer \
+        unifi-os-ingress.service \
+        unifi-os-port-alias@8443.service unifi-os-port-alias@8843.service \
+        unifi-os-port-alias@10001.service
 
-# Health check
-HEALTHCHECK --start-period=5m \
-    CMD curl --insecure --fail https://localhost:8443 || exit 1
+ENV container=docker
+STOPSIGNAL SIGRTMIN+3
+ENTRYPOINT ["/usr/local/bin/unifi-os-entrypoint"]
+
+HEALTHCHECK --start-period=45m --interval=30s --timeout=20s --retries=3 \
+    CMD ["/usr/local/bin/unifi-os-health"]
 
 # Build arguments
 ARG BUILD_ARCH

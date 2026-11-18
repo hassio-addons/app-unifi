@@ -5,23 +5,42 @@ configuration:
     description: >-
       Kontroluje poziom szczegółowości logów, jaki zapewnia dodatek.
   memory_max:
-    name: Max Memory
+    name: Maksymalna pamięć
     description: >-
-      Ta opcja pozwala na zmianę ilości pamięci, którą może używać
-      aplikacja UniFi Network.
+      Maksymalna pamięć Java (heap), w MB, dla aplikacji UniFi Network
+      działającej w UniFi OS. Pozostaw puste, aby użyć wartości domyślnej
+      Ubiquiti. Nie ogranicza całego UniFi OS.
   memory_init:
-    name: Initial Memory
+    name: Pamięć początkowa
     description: >-
-      Ta opcja pozwala zmienić ilość pamięci, którą aplikacja UniFi
-      Network będzie rezerwować/używać przy starcie.
+      Początkowa pamięć Java (heap), w MB, dla aplikacji UniFi Network
+      działającej w UniFi OS. Nie może być większa niż pamięć maksymalna.
+      Pozostaw puste, aby użyć wartości domyślnej Ubiquiti.
+  ingress_allow_insecure_http:
+    name: Zezwól na niezabezpieczony ingress HTTP
+    description: >-
+      Domyślnie wyłączone. Pozwala otworzyć konsolę UniFi wewnątrz Home
+      Assistant, gdy Home Assistant jest dostępny przez zwykłe HTTP, usuwając
+      ochronę Secure z ciasteczek logowania UniFi. Hasło i sesja UniFi są
+      wtedy przesyłane bez szyfrowania. Używaj tylko w zaufanej sieci; zalecane
+      jest HTTPS. Nie wpływa na bezpośrednią konsolę HTTPS. Po zmianie uruchom
+      aplikację ponownie.
 network:
-  161/udp: Używany dla dostępu po SNMP
-  1900/udp: L2 wykrywalny port
-  3478/udp: Używany dla STUN
-  5514/udp: Używany do zdalnego debugowania syslogu
-  6789/tcp: Używany do testu prędkości UniFi mobile
-  8080/tcp: Używany do komunikacji urządzeń z kontrolerem
-  8443/tcp: Używany do interfejsu webowego kontrolera i API
-  8843/tcp: Używany do przekierowania na portal po HTTPS
-  8880/tcp: Używany do przekierowania na portal po HTTP
-  10001/udp: Używany do wykrywania urządzeń
+  161/udp: Zachowane z poprzedniej wersji (SNMP); aplikacja nie dodaje usługi SNMP
+  1900/udp: Zachowane z poprzedniej wersji (SSDP); aplikacja nie dodaje usługi SSDP
+  3478/udp: STUN
+  5514/udp: Zdalny syslog z urządzeń UniFi
+  5671/tcp: Inna usługa UniFi OS
+  6789/tcp: Test prędkości UniFi Mobile
+  8080/tcp: Inform urządzeń (komunikacja urządzeń z kontrolerem)
+  8443/tcp: Poprzedni port konsoli (przekazywany do konsoli UniFi OS, 11443/TCP)
+  8843/tcp: Poprzedni port portalu gościnnego HTTPS (przekazywany do 8444/TCP)
+  8880/tcp: Portal gościnny HTTP
+  8881/tcp: Inna usługa UniFi OS
+  8882/tcp: Inna usługa UniFi OS
+  9543/tcp: UniFi Identity Hub
+  10001/udp: Poprzedni port wykrywania urządzeń (przekazywany do 10003/UDP)
+  11443/tcp: Konsola UniFi OS (interfejs WWW HTTPS)
+  8444/tcp: Portal gościnny HTTPS
+  10003/udp: Wykrywanie urządzeń UniFi OS
+  28082/tcp: Inna usługa UniFi OS

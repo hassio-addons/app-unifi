@@ -1,0 +1,145 @@
+#!/bin/bash
+# App-owned container adapter.
+set -euo pipefail
+
+# The Core API credential is only for the app's capability-free notification
+# services. It is removed from the environment of every later process and
+# kept only in a root-only runtime file for their LoadCredential=. Vendor
+# units and the nested runtime have that directory hidden from them; other
+# root processes of this app could still read it.
+notification_token=${SUPERVISOR_TOKEN:-${HASSIO_TOKEN:-}}
+export -n notification_token
+unset SUPERVISOR_TOKEN HASSIO_TOKEN
+
+# Before systemd runs, deliver recorded alerts directly: unprivileged, without
+# capabilities, bounded, and with the token on stdin only.
+deliver_alerts() {
+    [[ -n "${notification_token}" && -d /run/unifi-os-alerts ]] || return 0
+    printf '%s' "${notification_token}" | timeout 60 setpriv --reuid=nobody \
+        --regid=nogroup --clear-groups --bounding-set=-all --inh-caps=-all \
+        --ambient-caps=-all --no-new-privs \
+        /usr/bin/python3 /usr/share/unifi-os/alert-notification.py --token-stdin \
+        || echo "The start failure could not be reported to Home Assistant" >&2
+}
+refuse() {
+    deliver_alerts
+    exit 1
+}
+fail() {
+    echo "UniFi OS startup refused: $*" >&2
+    /usr/local/bin/unifi-os-alert startup_refused "UniFi OS Server could not start" \
+        "Startup was refused: $*. No UniFi data was changed. Check the app's configuration and the app log, then start the app again." \
+        || true
+    refuse
+}
+
+[[ "${container:-}" == docker && $$ -eq 1 ]] \
+    || fail "requires its own container PID namespace and PID 1"
+# Supervisor does not supply a /run tmpfs. Mount it first so that even a
+# refused start can record an alert. Credentials here are never backed up.
+mount -t tmpfs -o mode=0755,nosuid,nodev tmpfs /run \
+    || fail "cannot mount a private /run; the app needs its SYS_ADMIN privilege"
+mkdir -p /run/lock
+# Root-owned: only app components write alerts. Internal state is root-only.
+install -d -m 0755 /run/unifi-os-alerts
+install -d -m 0700 /run/unifi-os-app
+
+[[ "$(stat -fc %T /sys/fs/cgroup)" == cgroup2fs ]] \
+    || fail "requires cgroup v2"
+[[ "$(cat /proc/self/cgroup)" == "0::/" ]] \
+    || fail "requires a private cgroup namespace; will not modify host cgroups"
+mountpoint -q /lib/unifi/data || fail "/lib/unifi/data must be Supervisor's persistent data mount"
+[[ -c /dev/net/tun ]] || fail "/dev/net/tun is unavailable"
+# Supervisor names the profile after the app slug: <repository hash>_unifi,
+# local_unifi for local apps, or plain unifi when loaded directly (CI).
+profile=$(cat /proc/self/attr/current)
+[[ "${profile}" =~ ^([0-9a-f]{8}_|local_)?unifi\ \(enforce\)$ ]] \
+    || fail "requires enforcing AppArmor; do not disable the app profile"
+
+echo "SYS_ADMIN required; enforcing AppArmor and private namespaces checked."
+
+# Retain the complete storage root before the layout unit overlays its existing
+# unifi/data subdirectory at the vendor path. Neither mount is a data symlink.
+mkdir -p /var/lib/unifi-os-app
+mount --bind /lib/unifi/data /var/lib/unifi-os-app
+mkdir -p /var/lib/unifi-os-app/uos/bootstrap
+chmod 0700 /var/lib/unifi-os-app/uos/bootstrap
+
+# A flag left from the previous run means that stop did not finish its
+# checkpoint (or the start failed), so a backup of that stop cannot restore
+# UniFi OS. Check before anything below can invalidate or replace it.
+if [[ -e /var/lib/unifi-os-app/uos/runtime-checkpoint.incomplete ]]; then
+    /usr/local/bin/unifi-os-alert checkpoint_incomplete "Make a new backup of UniFi OS" \
+        "The last time this app stopped it could not save a complete UniFi OS runtime checkpoint (the stop was interrupted, or UniFi OS had not started successfully). A Home Assistant backup made during that stop cannot restore UniFi OS. Once UniFi OS is running again, create a new backup of this app." \
+        || true
+fi
+
+# Restore opaque runtime metadata before dropping MKNOD and before any service
+# can open its databases. This is separate from legacy MongoDB preparation.
+if ! /usr/local/bin/unifi-os-runtime-storage restore; then
+    /usr/local/bin/unifi-os-alert checkpoint_restore_failed "UniFi OS could not be restored from the backup" \
+        "The UniFi OS runtime checkpoint in this app's data is incomplete, damaged or was only partly extracted (see the app log), so UniFi OS was not started. Restore a different backup of this app, made after a clean stop." \
+        || true
+    refuse
+fi
+/usr/local/bin/unifi-os-installation-guard || refuse
+mkdir -p /var/lib/unifi-os-app/uos/home /var/lib/unifi-os-app/uos/state
+chown uosserver:uosserver /var/lib/unifi-os-app/uos/home
+# /var/lib/uosserver stays root-owned: the root updater executes binaries in it.
+/usr/local/bin/unifi-os-state-ownership || refuse
+# The capability-free setup-status sampler records explicit completion here.
+install -d -m 0755 -o uosserver -g uosserver /var/lib/unifi-os-app/uos/setup-status
+
+# A restored/saved checkpoint is no longer current once systemd starts writers.
+# Keep it invalid on the live instance so an abrupt stop cannot turn a later
+# stopped-app backup into a silent restore of stale state.
+if [[ -e /var/lib/unifi-os-app/uos/runtime-checkpoint.tar.gz \
+    || -e /var/lib/unifi-os-app/uos/runtime-checkpoint.tar.gz.sha256 ]]; then
+    /usr/local/bin/unifi-os-runtime-storage invalidate
+fi
+
+# Stable per-installation identity, without sharing the image's machine ID.
+if [[ ! -f /var/lib/unifi-os-app/uos/machine-id ]]; then
+    systemd-id128 new > /var/lib/unifi-os-app/uos/machine-id
+fi
+grep -Eq '^[0-9a-f]{32}$' /var/lib/unifi-os-app/uos/machine-id \
+    || fail "invalid persistent machine ID"
+install -m 0444 /var/lib/unifi-os-app/uos/machine-id /etc/machine-id
+
+# systemd manages only this container's private cgroups. Retain ALL Docker
+# /proc protections here; rootless runtime preparation lives in a worker ns.
+mount -o remount,rw /sys/fs/cgroup
+
+# This interface controls the whole kernel, not just a PID/mount namespace.
+# Keep Docker's read-only submount and fail closed if it is not effective.
+[[ ! -w /proc/sysrq-trigger ]] || fail "kernel SysRq interface must remain read-only"
+
+install -d -m 0755 -o unifi-port -g unifi-port /run/unifi-os-console-port
+if [[ -n "${notification_token}" ]]; then
+    install -d -m 0700 /run/unifi-ha-api
+    (umask 077; printf '%s' "${notification_token}" > /run/unifi-ha-api/token)
+fi
+/usr/local/bin/unifi-os-options || fail "the app options are invalid"
+/usr/local/bin/unifi-os-ingress-options || fail "the ingress policy could not be generated"
+
+# The vendor updater may write (never execute) the retained Network data only
+# when that data is bind mounted at /lib/unifi/data. Otherwise its drop-in
+# hides /lib/unifi/data, which is then the whole storage root.
+# The name sorts after home-assistant.conf, so its resets take effect.
+if [[ -f /var/lib/unifi-os-app/unifi/data/system.properties ]]; then
+    install -d -m 0755 /run/systemd/system/uosserver-updater.service.d
+    printf '%s\n' '[Service]' '# Generated at start: legacy layout present.' \
+        'TemporaryFileSystem=' 'ReadWritePaths=/lib/unifi/data' 'NoExecPaths=/lib/unifi/data' \
+        > /run/systemd/system/uosserver-updater.service.d/legacy-layout.conf
+fi
+
+# systemd replaces its own stdout with /dev/null. Keep a separate reader with
+# the original Docker stdout; never write to Supervisor's host /dev/console.
+mkfifo -m 0600 /run/unifi-os-log.pipe
+setpriv --bounding-set=-all /bin/bash -c \
+    'while true; do cat /run/unifi-os-log.pipe; done' &
+
+unset notification_token
+# Drop optional Docker baseline capabilities, even on older Supervisors.
+exec setpriv --bounding-set=-mknod,-net_raw,-audit_write,-setfcap \
+    /usr/lib/systemd/systemd --log-target=null --show-status=no

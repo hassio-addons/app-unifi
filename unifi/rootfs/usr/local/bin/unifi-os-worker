@@ -1,0 +1,120 @@
+#!/bin/bash
+# App-owned container adapter.
+set -euo pipefail
+unset SUPERVISOR_TOKEN HASSIO_TOKEN
+
+[[ "$(id -u)" == 0 ]] || exit 1
+case "${1:-}" in
+    installer|service|checkpoint-stop) mode=$1 ;;
+    *) echo "Invalid UniFi worker mode" >&2; exit 1 ;;
+esac
+
+# Called ONLY by the fixed unshare invocations above. Never prepare PID 1's
+# mount namespace, which must retain host-control protections for root.
+# readlink yields nothing if /proc is unavailable; never treat two empty
+# strings as "different".
+own_namespace=$(readlink /proc/self/ns/mnt || true)
+init_namespace=$(readlink /proc/1/ns/mnt || true)
+[[ -n "${own_namespace}" && -n "${init_namespace}" \
+    && "${own_namespace}" != "${init_namespace}" ]] \
+    || { echo "UniFi worker requires a separate mount namespace" >&2; exit 1; }
+# Docker masks these /proc entries with read-only or empty mounts. Rootless
+# crun cannot mount a new procfs while they are stacked on /proc, so they are
+# removed here, in this private namespace only. The cost is information
+# exposure, not write access: processes in this namespace (the root installer
+# and the UID-1001 runtime) can read host-wide data such as /proc/keys,
+# /proc/timer_list, /proc/sched_debug and /proc/interrupts. /proc/kcore stays
+# denied, and /proc/sys/{kernel,vm} and sysrq-trigger stay write-denied, by
+# the AppArmor profile.
+for path in \
+    /proc/acpi /proc/asound /proc/interrupts /proc/kcore /proc/keys \
+    /proc/latency_stats /proc/sched_debug /proc/scsi /proc/timer_list \
+    /proc/timer_stats /proc/bus /proc/fs /proc/irq /proc/sys \
+    /proc/sysrq-trigger; do
+    if mountpoint -q "${path}"; then
+        umount "${path}"
+    fi
+done
+
+# The Home Assistant credential (and systemd's per-unit credential copies) is
+# only for the app's notification services, never for the vendor installer
+# or runtime started from this namespace. Cover both with empty read-only
+# mounts before anything vendor-owned runs.
+for path in /run/unifi-ha-api /run/credentials; do
+    if [[ -d "${path}" && ! -L "${path}" ]]; then
+        mount -t tmpfs -o ro,nosuid,nodev,noexec,mode=0000,size=4k tmpfs "${path}"
+    fi
+done
+
+profile=$(cat /proc/self/attr/current)
+profile=${profile%% *}
+if [[ "${profile}" != unconfined ]]; then
+    [[ "${profile}" =~ ^[a-zA-Z0-9_.-]+$ ]] || exit 1
+    # Rootless crun verifies that the inherited profile is already loaded.
+    # Expose policy metadata read-only in this private namespace. No host mounts
+    # or the protected outer namespace are changed; policy-control writes are
+    # denied. Private-container D-Bus uses its separate compatibility override.
+    if [[ ! -f /sys/kernel/security/apparmor/profiles ]]; then
+        mount -t securityfs -o ro,nosuid,nodev,noexec securityfs /sys/kernel/security
+    fi
+    # All user-owned filesystem operations run as that user, never root. This
+    # prevents a concurrent symlink swap from truncating/chowning root files.
+    # This fixed child script evaluates its own variables after dropping UID.
+    # shellcheck disable=SC2016
+    runuser -u uosserver -- /bin/bash -euo pipefail -c '
+        umask 077
+        configuration=/home/uosserver/.config/containers/containers.conf.d
+        for path in /home/uosserver/.config /home/uosserver/.config/containers "$configuration" \
+            "$configuration/99-home-assistant-apparmor.conf"; do
+            [[ ! -L "$path" ]] || { echo "Refusing symlink AppArmor configuration" >&2; exit 1; }
+        done
+        mkdir -p "$configuration"
+        temporary=$(mktemp "$configuration/.ha-apparmor.XXXXXX")
+        trap '\''rm -f "$temporary"'\'' EXIT
+        printf '\''[containers]\napparmor_profile = "%s"\n'\'' "$1" > "$temporary"
+        mv -T "$temporary" "$configuration/99-home-assistant-apparmor.conf"
+    ' -- "${profile}"
+fi
+
+if [[ "${mode}" == installer ]]; then
+    # The pinned, trusted vendor installer needs root and runs transiently.
+    # No long-running root service inherits this mount namespace.
+    exec /opt/unifi-os/installer --non-interactive
+fi
+
+# setpriv changes this process itself; unlike runuser, it leaves no root
+# parent waiting in the relaxed namespace. Keep the bounding set needed by
+# Podman's trusted setuid newuidmap/newgidmap helpers, but clear ambient caps.
+export HOME=/home/uosserver USER=uosserver LOGNAME=uosserver
+XDG_RUNTIME_DIR="/run/user/$(id -u uosserver)"
+export XDG_RUNTIME_DIR
+if [[ "${mode}" == checkpoint-stop ]]; then
+    # The fixed UID-dropped child evaluates these variables itself.
+    # shellcheck disable=SC2016
+    exec setpriv --reuid=uosserver --regid=uosserver --init-groups \
+        --inh-caps=-all --ambient-caps=-all /bin/bash -euo pipefail -c '
+            /usr/bin/podman info >/dev/null
+            if /usr/bin/podman container exists uosserver; then
+                /usr/bin/podman stop --time=90 uosserver >/dev/null
+                [[ "$(/usr/bin/podman inspect uosserver --format "{{.State.Running}}")" == false ]]
+            else
+                status=$?
+                [[ "$status" == 1 ]]
+            fi
+        '
+fi
+# Expressions in this fixed script are evaluated by the UID-dropped child.
+# shellcheck disable=SC2016
+exec setpriv --reuid=uosserver --regid=uosserver --init-groups \
+    --inh-caps=-all --ambient-caps=-all \
+    /bin/bash -euo pipefail -c '
+        if test -w /proc/sysrq-trigger; then
+            echo "UniFi worker must not have writable kernel SysRq access" >&2
+            exit 1
+        fi
+        # Create the rootless pause namespace in this prepared mount view,
+        # before any bootstrap probe can initialise it from protected PID 1.
+        /usr/bin/podman info >/dev/null
+        touch "${XDG_RUNTIME_DIR}/unifi-rootless-ready"
+        exec /var/lib/uosserver/bin/uosserver-service
+    '

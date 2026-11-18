@@ -1,0 +1,46 @@
+#!/bin/bash
+set -euo pipefail
+unset SUPERVISOR_TOKEN HASSIO_TOKEN
+export XDG_RUNTIME_DIR=/run/user/1001
+podman() {
+    setpriv --reuid=uosserver --regid=uosserver --init-groups --inh-caps=-all \
+        env HOME=/home/uosserver USER=uosserver LOGNAME=uosserver XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR}" /usr/bin/podman "$@"
+}
+for ((attempt=0; attempt<120; attempt++)); do
+    if [[ -f "${XDG_RUNTIME_DIR}/unifi-rootless-ready" ]] \
+        && podman exec uosserver test -d /data 2>/dev/null \
+        && podman exec uosserver systemctl show --property=Version --value >/dev/null 2>&1; then
+        maximum=$(jq -r '.memory_max // empty' /run/unifi-os-options.json)
+        initial=$(jq -r '.memory_init // empty' /run/unifi-os-options.json)
+        bus=$(cat /usr/share/unifi-os/private-bus.conf)
+        changed=$(podman exec -i --user=0 uosserver /usr/bin/python3 - "${maximum}" "${initial}" "${bus}" \
+            < /usr/share/unifi-os/apply-network-options.py)
+        jq -e 'has("network_changed") and has("bus_changed")' <<< "${changed}" >/dev/null
+        # The nested OS boots with every outer start and then reads unchanged
+        # files itself. Restart its services only when a file changed now.
+        if jq -e '.network_changed or .bus_changed' <<< "${changed}" >/dev/null; then
+            podman exec --user=0 uosserver systemctl daemon-reload
+            podman exec --user=0 uosserver systemctl restart dbus.service
+            podman exec --user=0 uosserver systemctl try-restart unifi.service
+        fi
+        # The approved setup fix retains the vendor's auth gate and keeps the
+        # migration progress step available. Exact hashes gate every write;
+        # refusal must not stop backend services or trigger a migration.
+        version=$(cat /opt/unifi-os/version)
+        if ! podman exec -i --user=0 uosserver /usr/bin/python3 - "${version}" \
+            < /usr/share/unifi-os/setup-progress-screen.py; then
+            echo "WARNING: setup-progress screen patch declined; vendor UI remains unchanged" >&2
+        fi
+        # Non-fatal checks and maintenance; never block the vendor service.
+        /usr/local/bin/unifi-os-vendor-selfcheck \
+            || echo "WARNING: vendor compatibility self-check did not complete" >&2
+        # Also after start: an unclean stop skips the shutdown cleanup, and the
+        # sticky bit would then block Supervisor deleting data on restore.
+        /usr/local/bin/unifi-os-storage-cleanup \
+            || echo "WARNING: runtime log-directory cleanup did not complete" >&2
+        exit 0
+    fi
+    sleep 1
+done
+echo "Failed to apply retained Network heap options: inner OS did not become ready" >&2
+exit 1

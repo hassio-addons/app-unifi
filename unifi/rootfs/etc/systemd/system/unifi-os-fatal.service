@@ -1,0 +1,8 @@
+[Unit]
+Description=Report a failed UniFi OS start and stop the app
+# Started only through OnFailure= of unifi-os-bootstrap.service.
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/unifi-os-fatal
+TimeoutStartSec=240

@@ -1,4 +1,5 @@
 ---
+# The image is built from the digest-pinned FROM lines in the Dockerfile.
 build_from:
-  aarch64: ghcr.io/hassio-addons/ubuntu-base:8.2.1
-  amd64: ghcr.io/hassio-addons/ubuntu-base:8.2.1
+  aarch64: ubuntu:26.04
+  amd64: ubuntu:26.04

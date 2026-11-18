@@ -1,0 +1,34 @@
+#!/bin/bash
+# Check persisted installation metadata before PID 1 can run enabled vendor units.
+set -euo pipefail
+unset SUPERVISOR_TOKEN HASSIO_TOKEN
+readonly root=/var/lib/unifi-os-app
+readonly receipt="${root}/uos/bootstrap/installed-version"
+readonly configuration="${root}/uos/state/server.conf"
+version=$(cat /opt/unifi-os/version)
+# Vendor-written values are shown to the user; keep only version characters.
+clean() { tr -cd '0-9A-Za-z.+~-' | cut -c1-32; }
+fail() {
+    echo "UniFi OS installation guard refused: $2; inspect/preserve state before recovery" >&2
+    /usr/local/bin/unifi-os-alert "$1" "$3" "$4 The app did not start and changed no data." || true
+    exit 1
+}
+if [[ -f "${receipt}" ]]; then
+    installed=$(cat "${receipt}")
+    if ! grep -Fxq "APP_VERSION=${installed}" "${configuration}"; then
+        found=$(sed -n 's/^APP_VERSION=//p' "${configuration}" 2>/dev/null | head -n 1 | clean || true)
+        fail os_version_drift "vendor version drift or incomplete installation" \
+            "UniFi OS version changed outside the app" \
+            "The installed UniFi OS reports version '${found:-unknown}', but this app installed $(clean <<< "${installed}"). UniFi OS updates are only delivered with app updates; an update started from inside UniFi OS (or an interrupted update) changed it. Restore the latest backup of this app made before the change."
+    fi
+    dpkg --compare-versions "${version}" ge "${installed}" \
+        || fail os_downgrade "binary downgrade over newer persistent state" \
+            "This app version is older than the installed UniFi OS" \
+            "UniFi OS $(clean <<< "${installed}") is installed, but this app version provides ${version}. Update the app, or restore the backup that matches this app version."
+else
+    [[ ! -e "${configuration}" \
+        && ! -d "${root}/uos/home/.local/share/containers/storage" ]] \
+        || fail partial_installation "partial/existing installation without receipt" \
+            "An unfinished UniFi OS installation was found" \
+            "An earlier UniFi OS installation or update did not finish. Restore a backup of this app made before that installation; ask for help before deleting any app data."
+fi

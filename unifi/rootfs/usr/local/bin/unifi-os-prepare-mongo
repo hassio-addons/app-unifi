@@ -1,0 +1,177 @@
+#!/bin/bash
+# App-owned pre-installer compatibility step.
+set -euo pipefail
+unset SUPERVISOR_TOKEN HASSIO_TOKEN
+umask 077
+
+readonly data=/lib/unifi/data
+readonly selection=/var/lib/unifi-os-app/mongo-runtime
+readonly backups=/var/lib/unifi-os-app/mongo-originals
+readonly runner=/usr/local/bin/unifi-os-mongo
+readonly prepared=/var/lib/unifi-os-app/mongo-prepared
+readonly receipt=/var/lib/unifi-os-app/uos/bootstrap/installed-version
+# The EOL MongoDB binaries never need privileges: even when the old app left a
+# root-owned database, root without capabilities can still open its own files.
+readonly unprivileged=(setpriv --bounding-set=-all --inh-caps=-all --ambient-caps=-all --no-new-privs)
+[[ -f "${data}/system.properties" && -d "${data}/db" ]] || exit 0
+[[ ! -L "${data}/db" ]] || { echo "Refusing symlink database" >&2; exit 1; }
+# Once the database reached 4.4 and the vendor OS is installed, nothing is
+# left to do; do not start and stop the old database on every boot.
+if [[ -f "${receipt}" && -f "${prepared}" && ! -L "${prepared}" && -f "${selection}" ]] \
+    && [[ "$(cat "${prepared}")" == 4.4 && "$(cat "${selection}")" == 4.4 ]]; then
+    echo "Retained MongoDB already prepared for UniFi OS (4.4); no database started."
+    exit 0
+fi
+exec 9>/run/unifi-mongo-prepare.lock
+flock -n 9 || exit 1
+
+fail() { echo "MongoDB preparation failed: $*; vendor startup blocked" >&2; exit 1; }
+[[ -f "${data}/db/WiredTiger" ]] || fail "missing/unsupported WiredTiger database"
+version=3.6
+[[ ! -e "${selection}" ]] || version=$(cat "${selection}")
+case "${version}" in 3.6|4.0|4.2|4.4) ;; *) fail "unknown runtime ${version}" ;; esac
+
+# Even starting the old binary can perform journal recovery. Preserve the cold
+# originals before opening them, not just before the first FCV change.
+install -d -m 0700 "${backups}"
+if [[ ! -e "${backups}/originals.tar" ]]; then
+    # No database may have opened before this commit. If an executable selection
+    # already exists, missing originals require operator recovery, not a new tar
+    # of potentially migrated data. Preserve interrupted staging, never delete a
+    # real original archive or invent a checksum for an existing final archive.
+    [[ ! -e "${selection}" ]] || fail "originals missing after runtime selection"
+    for staged in originals.tar.tmp originals.sha256.tmp originals.sha256; do
+        if [[ -e "${backups}/${staged}" || -L "${backups}/${staged}" ]]; then
+            [[ -f "${backups}/${staged}" && ! -L "${backups}/${staged}" ]] \
+                || fail "invalid original-backup staging entry"
+            preserved=$(mktemp -d "${backups}/interrupted.XXXXXX")
+            mv -- "${backups}/${staged}" "${preserved}/${staged}"
+        fi
+    done
+    required=$(du --apparent-size --summarize --block-size=1 "${data}" | awk '{print $1}')
+    available=$(df --output=avail --block-size=1 "${backups}" | tail -1 | tr -d ' ')
+    [[ "${required}" =~ ^[0-9]+$ && "${available}" =~ ^[0-9]+$ ]] || fail "cannot establish original-backup space"
+    (( available > required + 16 * 1024 * 1024 )) || fail "insufficient space for complete cold originals"
+    tar -cpf "${backups}/originals.tar.tmp" -C "${data}" .
+    tar -df "${backups}/originals.tar.tmp" -C "${data}"
+    digest=$(sha256sum "${backups}/originals.tar.tmp")
+    printf '%s  originals.tar\n' "${digest%% *}" > "${backups}/originals.sha256.tmp"
+    sync -f "${backups}/originals.tar.tmp"
+    sync -f "${backups}/originals.sha256.tmp"
+    # Commit the durable checksum before the durable archive. An interruption
+    # before the archive is linked is pre-write staging and can be retried above.
+    ln "${backups}/originals.sha256.tmp" "${backups}/originals.sha256"
+    sync -f "${backups}"
+    ln "${backups}/originals.tar.tmp" "${backups}/originals.tar"
+    sync -f "${backups}"
+    rm "${backups}/originals.tar.tmp"
+    rm "${backups}/originals.sha256.tmp"
+    echo "Cold legacy originals saved privately at ${backups}/originals.tar"
+fi
+(cd "${backups}" && sha256sum --status --check originals.sha256) || fail "original backup integrity"
+
+# Staging preserved from interrupted pre-open backups is redundant once the
+# complete originals above are verified. Reap only directories this script
+# created that contain nothing but its own regular staging files.
+shopt -s nullglob
+for preserved in "${backups}"/interrupted.??????; do
+    [[ -d "${preserved}" && ! -L "${preserved}" ]] || continue
+    if [[ -n "$(find "${preserved}" -mindepth 1 -maxdepth 1 ! \( -type f \( \
+        -name originals.tar.tmp -o -name originals.sha256.tmp -o -name originals.sha256 \) \) \
+        -print -quit)" ]]; then
+        echo "Keeping ${preserved}: unexpected contents" >&2
+        continue
+    fi
+    rm -r --one-file-system -- "${preserved}"
+    echo "Removed stale interrupted backup staging ${preserved##*/}"
+done
+shopt -u nullglob
+
+work=$(mktemp -d /run/unifi-mongo-prepare.XXXXXX)
+owner=$(stat -c %u "${data}/db")
+group=$(stat -c %g "${data}/db")
+chown "${owner}:${group}" "${work}"
+pid=
+stop() {
+    if [[ -n "${pid}" ]]; then
+        kill -TERM "${pid}"
+        wait "${pid}"
+        pid=
+    fi
+}
+cleanup() {
+    if [[ -n "${pid}" ]] && kill -0 "${pid}" 2>/dev/null; then
+        kill -TERM "${pid}"
+        wait "${pid}" || true
+    fi
+}
+trap cleanup EXIT
+trap 'exit 1' TERM INT
+mark_prepared() {
+    printf '4.4\n' > "${prepared}.tmp"
+    sync -f "${prepared}.tmp"
+    mv "${prepared}.tmp" "${prepared}"
+    sync -f "${prepared}"
+}
+query() { "${unprivileged[@]}" "${runner}" "${version}" mongo --quiet --host 127.0.0.1 --port 27118 --eval "$1"; }
+start() {
+    "${unprivileged[@]}" --reuid="${owner}" --regid="${group}" --clear-groups \
+        "${runner}" "${version}" mongod --dbpath "${data}/db" \
+        --bind_ip 127.0.0.1 --port 27118 --nounixsocket \
+        --wiredTigerCacheSizeGB 0.25 --logpath "${work}/mongo-${version}.log" &
+    pid=$!
+    deadline=$((SECONDS + 300))
+    while (( SECONDS < deadline )); do
+        kill -0 "${pid}" 2>/dev/null || fail "MongoDB ${version} exited; see ${work}"
+        if query 'quit(db.adminCommand({ping:1}).ok === 1 ? 0 : 1)' >/dev/null 2>&1; then return; fi
+        sleep 1
+    done
+    fail "MongoDB ${version} did not become ready; see ${work}"
+}
+validate() {
+    query 'db.getMongo().getDBNames().forEach(function(n) {
+        var d=db.getSiblingDB(n);
+        d.getCollectionInfos().forEach(function(c) {
+            if(c.type !== "view") {
+                var r=d.runCommand({validate:c.name,full:true});
+                if(r.ok !== 1 || r.valid !== true) throw new Error("Invalid collection: "+n+"."+c.name);
+            }
+        });
+    });' >/dev/null
+}
+start
+server=$(query 'print(db.version().split(".").slice(0,2).join("."))')
+[[ "${server}" == "${version}" ]] || fail "unexpected server version ${server}"
+fcv=$(query "var r=db.adminCommand({getParameter:1,featureCompatibilityVersion:1}); assert.commandWorked(r); assert(!r.featureCompatibilityVersion.targetVersion || r.featureCompatibilityVersion.targetVersion === '${version}'); print(r.featureCompatibilityVersion.version)")
+# Only 4.4/4.4 is final. A run interrupted after the 4.2 FCV step but before
+# the runtime selection advanced must continue to 4.4, not stop at 4.2.
+if [[ "${version}" == 4.4 && "${fcv}" == 4.4 ]]; then
+    stop
+    mark_prepared
+    echo "MongoDB ${version}, FCV ${fcv}: already exporter-compatible; no format upgrade."
+    exit 0
+fi
+
+while :; do
+    case "${version}:${fcv}" in
+        3.6:3.4|3.6:3.6|4.0:3.6|4.0:4.0|4.2:4.0|4.2:4.2|4.4:4.2|4.4:4.4) ;;
+        *) fail "unsupported server/FCV ${version}/${fcv}" ;;
+    esac
+    # Idempotent MongoDB FCV command also completes an interrupted transition.
+    query "assert.commandWorked(db.adminCommand({setFeatureCompatibilityVersion:'${version}'}))" >/dev/null
+    fcv=$(query 'var r=db.adminCommand({getParameter:1,featureCompatibilityVersion:1}); assert.commandWorked(r); assert(!r.featureCompatibilityVersion.targetVersion); print(r.featureCompatibilityVersion.version)')
+    [[ "${fcv}" == "${version}" ]] || fail "FCV checkpoint ${version}"
+    validate
+    stop
+    echo "Validated in-place MongoDB ${version}, FCV ${fcv}."
+    case "${version}" in
+        3.6) version=4.0 ;; 4.0) version=4.2 ;; 4.2) version=4.4 ;; 4.4) mark_prepared; break ;;
+    esac
+    # Only record the executable to use on restart; FCV is the upgrade checkpoint.
+    printf '%s\n' "${version}" > "${selection}.tmp"
+    chmod 0644 "${selection}.tmp"
+    sync -f "${selection}.tmp"
+    mv "${selection}.tmp" "${selection}"
+    sync -f "${selection}"
+    start
+done

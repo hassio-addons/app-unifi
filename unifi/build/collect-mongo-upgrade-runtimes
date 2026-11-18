@@ -1,0 +1,68 @@
+#!/bin/bash
+# App-owned build adapter.
+set -euo pipefail
+
+# Official, checksum-pinned EOL runtimes used only for legacy import preparation.
+case "$(dpkg --print-architecture)" in
+    arm64)
+        loader=/lib/ld-linux-aarch64.so.1
+        archives=(arm64-ubuntu1604-4.0.28 aarch64-ubuntu1804-4.2.25 aarch64-ubuntu1804-4.4.32)
+        checksums=(8bbb1c65ea62c9b6d16c6ba59fdc789399ce3f8ebae4675d7b7e489420a2ceaf 4867d6bf1b6c4dff0612b1e06bd827e1a854b38d00256545b8f14c58b07d2c2b ed75b920325bce529abb01a92a3be65c4f7f3a1f2d460a91ea93e20aca055b93)
+        ;;
+    amd64)
+        loader=/lib64/ld-linux-x86-64.so.2
+        archives=(x86_64-ubuntu1804-4.0.28 x86_64-ubuntu1804-4.2.25 x86_64-ubuntu1804-4.4.32)
+        checksums=(bd651ec85c2e6bfb496b322595070d8fd71a3c448dcd5142070795dde81a2872 e3ee07f47462246018fabbe5ad223293bcc262310a5381c1d774c93e04a861b1 353581b6813a09207dc503a99bd8c05db5886e4e10e6aa8a2a92459f3e976fdd)
+        ;;
+    *) exit 1 ;;
+esac
+versions=(4.0 4.2 4.4)
+libraries=()
+# ARM64 4.0 targets Xenial's CURL_OPENSSL_3 ABI; keep it isolated from
+# Bionic's libcurl4, which the later runtimes require.
+if [[ "$(dpkg --print-architecture)" == arm64 ]]; then
+    mkdir /curl3
+    (cd /curl3 && apt-get download libcurl3=7.58.0-2ubuntu2 && dpkg-deb -x ./*.deb .)
+    mkdir -p /upgrade-runtimes/licenses
+    dpkg-deb --fsys-tarfile /curl3/*.deb \
+        | tar -xO ./usr/share/doc/libcurl3/copyright > /upgrade-runtimes/licenses/libcurl3.copyright
+fi
+for index in 0 1 2; do
+    target="/upgrade-runtimes/${versions[index]}"
+    mkdir -p "${target}/bin"
+    cp -L "${loader}" "${target}/loader"
+    curl -fLsS --retry 2 "https://fastdl.mongodb.org/linux/mongodb-linux-${archives[index]}.tgz" -o /tmp/mongo.tgz
+    echo "${checksums[index]}  /tmp/mongo.tgz" | sha256sum --check
+    source="/tmp/mongo-${versions[index]}"
+    mkdir -p "${source}"
+    tar -xzf /tmp/mongo.tgz --strip-components=1 -C "${source}"
+    for binary in mongod mongo; do
+        cp "${source}/bin/${binary}" "${target}/bin/"
+        if [[ "${index}" == 0 && -d /curl3 ]]; then
+            dependencies=$(LD_LIBRARY_PATH=/curl3/usr/lib/aarch64-linux-gnu ldd "${target}/bin/${binary}")
+        else
+            dependencies=$(ldd "${target}/bin/${binary}")
+        fi
+        if grep -q 'not found' <<< "${dependencies}"; then
+            echo "${dependencies}" >&2
+            exit 1
+        fi
+        while IFS= read -r library; do
+            cp -L --parents "${library}" "${target}"
+            libraries+=("${library}")
+        done < <(awk '/=> \// {print $3} /^[[:space:]]*\// {print $1}' <<< "${dependencies}")
+    done
+    cp "${source}"/LICENSE* "${source}"/THIRD-PARTY-NOTICES* "${target}/" 2>/dev/null \
+        || cp "${source}"/LICENSE* "${target}/"
+done
+
+# Redistributed system libraries keep their package copyright notices.
+mkdir -p /upgrade-runtimes/licenses
+for package in $(for library in "${libraries[@]}" "${loader}"; do
+    dpkg -S "$(readlink -f "${library}")" 2>/dev/null || dpkg -S "${library}" 2>/dev/null || true
+done | cut -d: -f1 | sort -u); do
+    if [[ -f "/usr/share/doc/${package}/copyright" ]]; then
+        cp "/usr/share/doc/${package}/copyright" "/upgrade-runtimes/licenses/${package}.copyright"
+    fi
+done
+ls /upgrade-runtimes/licenses/*.copyright >/dev/null

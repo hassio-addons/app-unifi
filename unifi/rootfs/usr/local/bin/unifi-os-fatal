@@ -1,0 +1,49 @@
+#!/bin/bash
+# Report a failed UniFi OS start to the user and to Supervisor, then stop the
+# container with a non-zero status so Home Assistant shows the app as failed.
+set -euo pipefail
+unset SUPERVISOR_TOKEN HASSIO_TOKEN
+
+# The shutdown checkpoint must never record this run's partial state as a
+# valid recovery point; it leaves the previous checkpoint invalidated.
+install -d -m 0700 /run/unifi-os-app
+: > /run/unifi-os-app/fatal
+
+shopt -s nullglob
+specific=false
+for alert in /run/unifi-os-alerts/*; do
+    case "${alert##*/}" in
+        checkpoint_incomplete|vendor_version_unsupported|ingress_rewrite_mismatch) ;;
+        startup-complete) ;;
+        *) specific=true ;;
+    esac
+done
+if ! ${specific}; then
+    /usr/local/bin/unifi-os-alert bootstrap_failed "UniFi OS failed to start" \
+        "Starting UniFi OS did not complete, so the app was stopped. See the app log for the failing step. If this happened during an installation or update, the UniFi OS data may be incomplete; do not delete the app's data. Restart the app to retry, or restore the latest backup of this app."
+fi
+
+# Deliver synchronously. A second start catches an alert written while a
+# path-triggered delivery was already running.
+for _ in 1 2; do
+    systemctl start unifi-os-alert-notification.service \
+        || echo "Could not deliver the failure alert to Home Assistant" >&2
+done
+
+# The forwarder may not have caught up before shutdown stops it. Write the
+# failing step and the alert text straight to the app log as well.
+{
+    echo "UniFi OS start failed. Last messages of the start-up step:"
+    journalctl --no-pager --output=cat --lines=25 --unit=unifi-os-bootstrap.service || true
+    for alert in /run/unifi-os-alerts/*; do
+        [[ "${alert##*/}" =~ ^[a-z][a-z0-9_]*$ ]] || continue
+        echo "Alert (${alert##*/}): $(tr '\n' ' ' < "${alert}")"
+    done
+} | timeout 10 tee /run/unifi-os-log.pipe >/dev/null || true
+
+state=$(systemctl is-system-running 2>/dev/null || true)
+if [[ "${state}" == stopping ]]; then
+    exit 0
+fi
+echo "UniFi OS start failed; stopping the app so Home Assistant shows it as stopped." >&2
+systemctl --no-block exit 1

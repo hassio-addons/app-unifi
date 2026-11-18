@@ -1,0 +1,30 @@
+#!/bin/bash
+set -euo pipefail
+
+/usr/local/bin/unifi-os-runtime-storage invalidate
+for unit in uosserver.service uosserver-updater.service; do
+    state=$(systemctl show "${unit}" --property=ActiveState --value)
+    case "${state}" in
+        inactive|failed) ;;
+        *) echo "Shutdown checkpoint refused: ${unit} is not stopped (${state})" >&2; exit 1 ;;
+    esac
+done
+# Only a start that completed (and was not reported as fatal) is a valid
+# recovery point. Otherwise the checkpoint stays invalidated, and Podman is
+# not initialised where no runtime storage exists: that would turn a refused
+# start into "partial installation" state.
+started=false
+if [[ -f /run/unifi-os-app/started && ! -e /run/unifi-os-app/fatal ]]; then
+    started=true
+fi
+if ${started} || [[ -d /var/lib/unifi-os-app/uos/home/.local/share/containers/storage ]]; then
+    # Never synchronously stop the updater in the server's ExecStopPost: the
+    # vendor server is After=updater, so that would deadlock the shutdown job.
+    unshare --mount --propagation private /usr/local/bin/unifi-os-worker checkpoint-stop
+fi
+/usr/local/bin/unifi-os-storage-cleanup
+if ! ${started}; then
+    echo "UniFi OS did not start successfully; no runtime checkpoint saved (backups of this stop cannot restore UniFi OS)." >&2
+    exit 0
+fi
+/usr/local/bin/unifi-os-runtime-storage snapshot

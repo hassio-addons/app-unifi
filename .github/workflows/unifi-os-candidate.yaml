@@ -1,0 +1,286 @@
+---
+name: UniFi OS candidate checks
+
+# yamllint disable-line rule:truthy
+on:
+  pull_request:
+    paths:
+      - unifi/**
+      - .github/workflows/unifi-os-candidate.yaml
+  workflow_dispatch:
+  # Deploy calls this on every push to main and release, so these checks gate
+  # publishing independently of the path filter above.
+  workflow_call:
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    # Explicit bash adds -o pipefail, so image export/load pipes fail closed.
+    shell: bash
+
+jobs:
+  static:
+    name: Shell adapters and test script syntax
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Check out code
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - name: Install ShellCheck
+        timeout-minutes: 5
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y shellcheck
+      - name: Check shell adapters
+        timeout-minutes: 2
+        run: |
+          shellcheck unifi/rootfs/usr/local/bin/unifi-os-* \
+            unifi/rootfs/usr/lib/unifi/bin/mongod unifi/build/* unifi/tests/*.sh
+      - name: Compile test and CI scripts
+        timeout-minutes: 2
+        run: |
+          python3 -W error -m py_compile unifi/tests/*.py \
+            unifi/tests/harness/*.py
+
+  build:
+    name: Build image (${{ matrix.arch }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-24.04
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 50
+    steps:
+      - name: Check out code
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - name: Build architecture-matched image
+        timeout-minutes: 40
+        run: |
+          docker build --platform "linux/${{ matrix.arch }}" \
+            -t unifi-os-candidate:test unifi
+      - name: Export image
+        timeout-minutes: 10
+        run: |
+          command -v zstd >/dev/null || { sudo apt-get update && sudo apt-get install -y zstd; }
+          docker save unifi-os-candidate:test \
+            | zstd -T0 -3 -o "${RUNNER_TEMP}/unifi-os-candidate.tar.zst"
+      - name: Upload image
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        timeout-minutes: 15
+        with:
+          name: unifi-os-candidate-image-${{ matrix.arch }}
+          path: ${{ runner.temp }}/unifi-os-candidate.tar.zst
+          if-no-files-found: error
+          retention-days: 1
+          compression-level: 0
+
+  unit:
+    name: Image-backed unit tests (${{ matrix.arch }})
+    needs: build
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-24.04
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 45
+    env:
+      UNIFI_MONGO_TEST_IMAGE: unifi-os-candidate:test
+      UNIFI_INGRESS_TEST_IMAGE: unifi-os-candidate:test
+    steps:
+      - name: Check out code
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - name: Set up Node.js for browser adapter fixtures
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        timeout-minutes: 5
+        with:
+          node-version: 24
+      - name: Install PyYAML and the AppArmor parser
+        timeout-minutes: 5
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y python3-yaml apparmor
+      - name: Download image
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        timeout-minutes: 15
+        with:
+          name: unifi-os-candidate-image-${{ matrix.arch }}
+          path: ${{ runner.temp }}/image
+      - name: Load image
+        id: load
+        timeout-minutes: 10
+        run: |
+          command -v zstd >/dev/null || { sudo apt-get update && sudo apt-get install -y zstd; }
+          zstd -dc "${RUNNER_TEMP}/image/unifi-os-candidate.tar.zst" | docker load
+          test "$(docker image inspect -f '{{.Architecture}}' unifi-os-candidate:test)" \
+            = "${{ matrix.arch }}"
+          rm -r "${RUNNER_TEMP}/image"
+      - name: Test vendor boundary and real in-place MongoDB upgrades (no skips)
+        timeout-minutes: 30
+        run: |
+          python3 unifi/tests/run_required_tests.py unifi/tests \
+            --require-env UNIFI_MONGO_TEST_IMAGE \
+            --require-env UNIFI_INGRESS_TEST_IMAGE
+      - name: Test real isolated bind mounts
+        # Independent of the product test result, but only with a loaded image.
+        if: ${{ !cancelled() && steps.load.outcome == 'success' }}
+        timeout-minutes: 5
+        run: |
+          docker run --rm --network=none --cap-add=SYS_ADMIN \
+            --security-opt apparmor=unconfined --entrypoint=bash \
+            -v "${PWD}/unifi/tests/test_bind_layout.sh:/run/test-layout:ro" \
+            unifi-os-candidate:test /run/test-layout
+      - name: Test the test harness (no skips)
+        # Independent of the product test result, but only with a loaded image.
+        if: ${{ !cancelled() && steps.load.outcome == 'success' }}
+        timeout-minutes: 10
+        run: |
+          python3 unifi/tests/run_required_tests.py unifi/tests/harness \
+            --require-env UNIFI_MONGO_TEST_IMAGE
+
+  lifecycle:
+    name: Nested OS lifecycle (${{ matrix.arch }})
+    needs: build
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-24.04
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 80
+    steps:
+      - name: Check out code
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - name: Download image
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        timeout-minutes: 15
+        with:
+          name: unifi-os-candidate-image-${{ matrix.arch }}
+          path: ${{ runner.temp }}/image
+      - name: Load image
+        timeout-minutes: 10
+        run: |
+          command -v zstd >/dev/null || { sudo apt-get update && sudo apt-get install -y zstd; }
+          zstd -dc "${RUNNER_TEMP}/image/unifi-os-candidate.tar.zst" | docker load
+          test "$(docker image inspect -f '{{.Architecture}}' unifi-os-candidate:test)" \
+            = "${{ matrix.arch }}"
+          rm -r "${RUNNER_TEMP}/image"
+      - name: Load enforcing AppArmor profile
+        timeout-minutes: 5
+        run: |
+          command -v apparmor_parser >/dev/null \
+            || { sudo apt-get update && sudo apt-get install -y apparmor; }
+          sudo apparmor_parser --replace unifi/apparmor.txt
+      - name: Test native nested OS and cold-storage lifecycle
+        timeout-minutes: 55
+        env:
+          UNIFI_OS_LIFECYCLE_TEST_IMAGE: unifi-os-candidate:test
+        run: python3 unifi/tests/check_lifecycle.py
+
+  install-recovery:
+    name: Installer interruption recovery (${{ matrix.arch }})
+    needs: build
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-24.04
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 60
+    steps:
+      - name: Check out code
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - name: Download image
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        timeout-minutes: 15
+        with:
+          name: unifi-os-candidate-image-${{ matrix.arch }}
+          path: ${{ runner.temp }}/image
+      - name: Load image
+        timeout-minutes: 10
+        run: |
+          command -v zstd >/dev/null || { sudo apt-get update && sudo apt-get install -y zstd; }
+          zstd -dc "${RUNNER_TEMP}/image/unifi-os-candidate.tar.zst" | docker load
+          test "$(docker image inspect -f '{{.Architecture}}' unifi-os-candidate:test)" \
+            = "${{ matrix.arch }}"
+          rm -r "${RUNNER_TEMP}/image"
+      - name: Load enforcing AppArmor profile
+        timeout-minutes: 5
+        run: |
+          command -v apparmor_parser >/dev/null \
+            || { sudo apt-get update && sudo apt-get install -y apparmor; }
+          sudo apparmor_parser --replace unifi/apparmor.txt
+      - name: Test actual installer interruption and cold-backup recovery
+        timeout-minutes: 40
+        env:
+          UNIFI_OS_RECOVERY_TEST_IMAGE: unifi-os-candidate:test
+        run: python3 unifi/tests/check_install_recovery.py
+
+  base-upgrade:
+    name: Previous-release data upgrade (${{ matrix.arch }})
+    needs: build
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-24.04
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 90
+    steps:
+      - name: Check out code
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - name: Download image
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        timeout-minutes: 15
+        with:
+          name: unifi-os-candidate-image-${{ matrix.arch }}
+          path: ${{ runner.temp }}/image
+      - name: Load image
+        timeout-minutes: 10
+        run: |
+          command -v zstd >/dev/null || { sudo apt-get update && sudo apt-get install -y zstd; }
+          zstd -dc "${RUNNER_TEMP}/image/unifi-os-candidate.tar.zst" | docker load
+          test "$(docker image inspect -f '{{.Architecture}}' unifi-os-candidate:test)" \
+            = "${{ matrix.arch }}"
+          rm -r "${RUNNER_TEMP}/image"
+      - name: Load enforcing AppArmor profile
+        timeout-minutes: 5
+        run: |
+          command -v apparmor_parser >/dev/null \
+            || { sudo apt-get update && sudo apt-get install -y apparmor; }
+          sudo apparmor_parser --replace unifi/apparmor.txt
+      - name: Upgrade data created by the previous app release
+        timeout-minutes: 70
+        env:
+          UNIFI_OS_UPGRADE_TEST_IMAGE: unifi-os-candidate:test
+        run: python3 unifi/tests/check_base_upgrade.py

@@ -1,0 +1,7 @@
+#!/bin/bash
+# App-owned container adapter.
+set -euo pipefail
+
+# Outer systemd creates a mount namespace solely for this worker. The worker
+# drops to UID 1001 before executing any long-running UniFi/Podman service.
+exec unshare --mount --propagation private /usr/local/bin/unifi-os-worker service

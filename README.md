@@ -1,4 +1,4 @@
-# Home Assistant Community App: UniFi Network Application
+# Home Assistant Community App: UniFi OS Server
 
 [![GitHub Release][releases-shield]][releases]
 ![Project Stage][project-stage-shield]
@@ -12,22 +12,26 @@
 
 [![Support Frenck on Patreon][patreon-shield]][patreon]
 
-The UniFi Network Application allows you to manage your UniFi network
-using a web browser.
-
-![The UniFi Network Application app](images/screenshot.jpg)
+UniFi OS Server lets you manage your UniFi network using a web browser,
+right from Home Assistant.
 
 ## About
 
-This app runs Ubiquiti Networks' UniFi Network Application software, which
-allows you to manage your UniFi network via the web browser. The app
-provides a single-click installation and run solution for Home Assistant,
-allowing users to get their network up, running, and updated, easily.
+This app runs Ubiquiti's UniFi OS Server, including the UniFi Network
+application, on your Home Assistant system. It installs UniFi OS Server with
+Ubiquiti's official, unmodified installer, and the web interface opens inside
+Home Assistant.
 
-**Note:** The standalone UniFi Network Application is approaching end-of-life.
-Ubiquiti is transitioning to UniFi OS Server, which does not translate to a
-Docker/Home Assistant app. There is no upgrade path from this app to UniFi OS
-Server. See the [documentation][docs] for details.
+Earlier versions of this app ran the standalone UniFi Network Application.
+This version replaces it in place: on the first start it upgrades your
+existing UniFi data, installs UniFi OS Server, and Ubiquiti's setup wizard
+imports your Network configuration.
+
+**Important:** this update cannot be undone without restoring a Home Assistant
+backup of the app made before the update. Make that backup first, and if you
+use a local UniFi account, export a `.unf` backup from the current UniFi
+Network Application before updating. Home Assistant does not install this
+update automatically. Read the [documentation][docs] before updating.
 
 [:books: Read the full app documentation][docs]
 

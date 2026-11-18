@@ -1,0 +1,36 @@
+[Unit]
+Description=Deliver UniFi app alerts as Home Assistant notifications
+After=network.target
+ConditionPathExists=/run/unifi-ha-api/token
+ConditionDirectoryNotEmpty=/run/unifi-os-alerts
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/python3 /usr/share/unifi-os/alert-notification.py
+# Bounded retries fit in this deadline; the fatal path waits for it.
+TimeoutStartSec=90
+LoadCredential=ha-api-token:/run/unifi-ha-api/token
+RuntimeDirectory=unifi-os-alert-notification
+RuntimeDirectoryMode=0700
+RuntimeDirectoryPreserve=yes
+DynamicUser=yes
+NoNewPrivileges=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
+PrivateDevices=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=yes
+# Same redundant-sandbox adaptation as the capability-free port aliases.
+ProtectKernelTunables=no
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictNamespaces=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+SystemCallArchitectures=native
+LockPersonality=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+
+[Install]
+WantedBy=multi-user.target

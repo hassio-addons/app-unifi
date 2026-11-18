@@ -1,0 +1,105 @@
+#!/bin/bash
+# Opaque filesystem checkpoint only; no Network backup conversion/import APIs.
+set -euo pipefail
+umask 077
+mode=${1:?invalidate, snapshot or restore required}
+root=${2:-/var/lib/unifi-os-app/uos}
+archive="${root}/runtime-checkpoint.tar.gz"
+checksum="${archive}.sha256"
+failed="${root}/runtime-checkpoint.incomplete"
+restore_failed="${root}/runtime-restore.incomplete"
+mkdir -p "${root}"
+exec 9>/run/unifi-runtime-checkpoint.lock
+flock -n 9 || { echo "Runtime checkpoint operation already in progress" >&2; exit 1; }
+
+fail() { echo "UniFi runtime checkpoint failed: $*" >&2; exit 1; }
+invalidate() {
+    printf 'Checkpoint did not finish; do not restore a stale runtime.\n' > "${failed}"
+    sync -f "${failed}"
+    sync -f "${root}"
+}
+for directory in home state; do
+    [[ ! -L "${root}/${directory}" ]] || fail "symlink runtime directory"
+done
+
+case "${mode}" in
+    invalidate) invalidate ;;
+    snapshot)
+        # This flag is retained on any failure. Even a backup taken while the
+        # outer app is stopped must never restore an older checkpoint silently.
+        invalidate
+        [[ ! -e "${restore_failed}" ]] || fail "previous runtime extraction is incomplete"
+        mkdir -p "${root}/home" "${root}/state"
+        # Reserved mktemp files are not recovery points. Under the snapshot lock,
+        # reap only regular, same-owner leftovers from a killed snapshot; never
+        # touch valid archives, symlinks or arbitrary similarly named files.
+        shopt -s nullglob
+        for leftover in "${root}"/.runtime-checkpoint.??????{,.sha256}; do
+            [[ ! -L "${leftover}" && -f "${leftover}" \
+                && "$(stat -c %u "${leftover}")" == "${EUID}" ]] || continue
+            rm -- "${leftover}"
+        done
+        # The new archive is written beside the previous one before replacing
+        # it. Refuse early rather than filling the disk Home Assistant shares;
+        # the uncompressed size is a conservative upper bound.
+        needed=$(du -sx --block-size=1 "${root}/home" "${root}/state" | awk '{sum += $1} END {print sum}')
+        available=$(df --output=avail --block-size=1 "${root}" | tail -n 1)
+        (( available > needed )) \
+            || fail "insufficient free space for a checkpoint (${needed} bytes needed, ${available} available)"
+        temporary=$(mktemp "${root}/.runtime-checkpoint.XXXXXX")
+        trap 'rm -f "${temporary}" "${temporary}.sha256"' EXIT
+        tar --numeric-owner --xattrs --acls --one-file-system -I 'gzip -1' \
+            -cpf "${temporary}" -C "${root}" home state
+        # Tar may stop at its own end marker before gzip checks its trailer.
+        # Require a complete compressed-stream CRC/length check separately.
+        gzip -t "${temporary}"
+        # Compare cold source bytes/metadata before marking the checkpoint valid.
+        tar --numeric-owner --xattrs --acls -zdf "${temporary}" -C "${root}"
+        hash=$(sha256sum "${temporary}")
+        printf '%s  runtime-checkpoint.tar.gz\n' "${hash%% *}" > "${temporary}.sha256"
+        sync -f "${temporary}"
+        sync -f "${temporary}.sha256"
+        mv "${temporary}" "${archive}"
+        mv "${temporary}.sha256" "${checksum}"
+        sync -f "${root}"
+        rm "${failed}"
+        sync -f "${root}"
+        echo "Quiesced nested-runtime checkpoint verified."
+        ;;
+    restore)
+        [[ ! -e "${restore_failed}" ]] || fail "previous runtime extraction is incomplete; inspect partial directories before recovery"
+        # Ordinary restarts keep the live directories. Only a HA restore whose
+        # raw runtime was excluded needs extraction; never overlay live data.
+        home_present=false
+        state_present=false
+        if [[ -d "${root}/home" ]] && [[ -n "$(find "${root}/home" -mindepth 1 -maxdepth 1 -print -quit)" ]]; then home_present=true; fi
+        if [[ -d "${root}/state" ]] && [[ -n "$(find "${root}/state" -mindepth 1 -maxdepth 1 -print -quit)" ]]; then state_present=true; fi
+        if ${home_present} || ${state_present}; then
+            [[ ! -e "${archive}" ]] || { ${home_present} && ${state_present}; } \
+                || fail "partial raw runtime beside a checkpoint"
+            exit 0
+        fi
+        [[ ! -e "${failed}" ]] || fail "incomplete checkpoint; refusing stale restore"
+        if [[ ! -e "${archive}" && ! -e "${checksum}" ]]; then exit 0; fi
+        [[ -f "${archive}" && ! -L "${archive}" && -f "${checksum}" && ! -L "${checksum}" ]] \
+            || fail "missing/symlink checkpoint files"
+        (cd "${root}" && sha256sum --status --check runtime-checkpoint.tar.gz.sha256) \
+            || fail "checkpoint checksum mismatch"
+        gzip -t "${archive}" || fail "checkpoint compression integrity"
+        python3 /usr/share/unifi-os/validate-runtime-archive.py "${archive}"
+        # A failed/interrupted extraction can leave both roots nonempty. Never
+        # mistake that partial restore for a normal live-data restart.
+        printf 'Runtime extraction did not finish.\n' > "${restore_failed}"
+        sync -f "${restore_failed}"
+        sync -f "${root}"
+        # GNU tar preserves mapped ownership, whiteouts, xattrs and set-id bits
+        # as a single opaque object, unlike Supervisor's raw directory copy.
+        tar --numeric-owner --same-owner --same-permissions --xattrs --xattrs-include='*' --acls \
+            -xzpf "${archive}" -C "${root}"
+        sync -f "${root}"
+        rm "${restore_failed}"
+        sync -f "${root}"
+        echo "Nested runtime restored from verified portable checkpoint."
+        ;;
+    *) fail "unsupported operation" ;;
+esac

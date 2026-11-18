@@ -1,0 +1,49 @@
+#!/bin/bash
+# Non-fatal start-up self-check of vendor details this app depends on. It
+# warns in the app log and raises alerts, but never blocks or fails startup.
+set -euo pipefail
+unset SUPERVISOR_TOKEN HASSIO_TOKEN
+
+# The setup-progress patch holds the single supported-version constant.
+supported=$(sed -n 's/^SUPPORTED_VERSION = "\([^"]*\)"$/\1/p' /usr/share/unifi-os/setup-progress-screen.py)
+image=$(cat /opt/unifi-os/version)
+installed=$(sed -n 's/^APP_VERSION=//p' /var/lib/uosserver/server.conf 2>/dev/null \
+    | head -n 1 | tr -cd '0-9A-Za-z.+~-' | cut -c1-32 || true)
+
+if [[ -z "${supported}" || "${image}" != "${supported}" || "${installed}" != "${supported}" ]]; then
+    echo "<4>WARNING: UniFi OS ${installed:-unknown} (image ${image}) is not the supported ${supported:-unknown}; in-frame ingress and setup integrations may not work" >&2
+    /usr/local/bin/unifi-os-alert vendor_version_unsupported "Unsupported UniFi OS version" \
+        "UniFi OS ${installed:-unknown} is running, but this app supports ${supported:-unknown}. The Home Assistant in-frame Web UI and setup notifications may not work; use the direct HTTPS console (port 11443, or your mapped port) if the Web UI misbehaves." \
+        || true
+fi
+
+# Literal vendor code that the ingress proxy's sub_filter rewrites match
+# (pinned to the supported version; see /etc/unifi-os/ingress.conf).
+labels=(login-location cookie-path public-path)
+literals=(
+    'let{location:{pathname:t}}=window'
+    'f=e=>{l.A.set(p,e,{expires:32,path:"/",sameSite:"lax",secure:!0})}'
+    '.p="/"'
+)
+result=$(setpriv --reuid=uosserver --regid=uosserver --init-groups --inh-caps=-all \
+    env HOME=/home/uosserver USER=uosserver LOGNAME=uosserver XDG_RUNTIME_DIR=/run/user/1001 \
+    timeout 60 /usr/bin/podman exec -i uosserver /usr/bin/python3 - "${literals[@]}" \
+    < /usr/share/unifi-os/vendor-selfcheck.py 2>/dev/null) || {
+    echo "WARNING: could not inspect the vendor portal bundles; ingress rewrite check skipped" >&2
+    exit 0
+}
+missing=()
+for index in "${!labels[@]}"; do
+    if ! jq -e --argjson index "${index}" '.bundles == true and .found[$index] == true' \
+        <<< "${result}" >/dev/null 2>&1; then
+        missing+=("${labels[index]}")
+    fi
+done
+if (( ${#missing[@]} )); then
+    echo "<4>WARNING: vendor portal code differs from the pinned ingress rewrites (missing: ${missing[*]}); in-frame ingress may not work, use the direct HTTPS console" >&2
+    /usr/local/bin/unifi-os-alert ingress_rewrite_mismatch "Home Assistant Web UI may not work" \
+        "The installed UniFi OS web code does not match what this app's in-frame Web UI expects (missing: ${missing[*]}). In-frame ingress may not work; use the direct HTTPS console (port 11443, or your mapped port) instead." \
+        || true
+else
+    echo "Vendor portal code matches the pinned ingress rewrites."
+fi

@@ -1,0 +1,16 @@
+#!/bin/bash
+set -euo pipefail
+
+# Keep Supervisor's original container-port keys/custom bindings. These fixed
+# aliases relay bytes only; vendor services, TLS and application ports are intact.
+case "${1:-}" in
+    8443) listen=TCP-LISTEN:8443,reuseaddr,fork,max-children=128,keepalive; target=TCP:127.0.0.1:11443; options=() ;;
+    8843) listen=TCP-LISTEN:8843,reuseaddr,fork,max-children=128,keepalive; target=TCP:127.0.0.1:8444; options=() ;;
+    10001) listen=UDP4-LISTEN:10001,reuseaddr,fork,max-children=64; target=UDP4:127.0.0.1:10003; options=(-T 30) ;;
+    *) echo "Unsupported UniFi compatibility port" >&2; exit 1 ;;
+esac
+# UDP has no EOF: reap idle discovery workers. Do not impose that timeout on
+# legitimate quiet TLS/WebSocket TCP sessions; bound their concurrency instead.
+# UDP-LISTEN supports the child bound and a per-peer reply path; RECVFROM does
+# not consume max-children in the pinned runtime. Payloads/ports stay unchanged.
+exec /usr/bin/socat "${options[@]}" "${listen}" "${target}"
