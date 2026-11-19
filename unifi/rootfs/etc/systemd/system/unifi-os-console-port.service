@@ -1,0 +1,49 @@
+[Unit]
+Description=Publish UniFi's configured console port for the ingress bridge
+# Pulled in (unordered) by the ingress unit; never enabled under a target, so
+# neither boot nor nginx waits for Supervisor. Independent of the vendor
+# bootstrap. The bridge reads the port as soon as it is published.
+After=network.target
+ConditionPathExists=/run/unifi-ha-api/token
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/bin/python3 /usr/share/unifi-os/setup-notification.py --publish-console-port
+# Hard deadline per run (the script's bounded attempts fit within it).
+TimeoutStartSec=300
+LoadCredential=ha-api-token:/run/unifi-ha-api/token
+Restart=on-failure
+RestartSec=15
+# Static unprivileged user owning the stable projection directory that the
+# entrypoint creates before systemd starts (no DynamicUser /run/private path).
+User=unifi-port
+Group=unifi-port
+ReadWritePaths=/run/unifi-os-console-port
+UMask=0022
+NoNewPrivileges=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
+PrivateDevices=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=yes
+# Same redundant-sandbox adaptation as the capability-free port aliases.
+ProtectKernelTunables=no
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictNamespaces=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+# Seccomp-backed restrictions, as RestrictNamespaces=/RestrictAddressFamilies=
+# already rely on. ProtectKernelLogs only masks /proc/kmsg and /dev/kmsg.
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
+LockPersonality=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+ProtectKernelLogs=yes
+ProtectClock=yes
+# Only Supervisor (resolved via the container's hosts file) and loopback.
+IPAddressAllow=172.30.32.2 127.0.0.1
+IPAddressDeny=any

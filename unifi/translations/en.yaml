@@ -7,21 +7,40 @@ configuration:
   memory_max:
     name: Max Memory
     description: >-
-      This option allows you to change the amount of memory the UniFi Network
-      Application is allowed to consume.
+      Maximum Java memory (heap), in MB, for the UniFi Network application
+      inside UniFi OS. Leave empty to use Ubiquiti's default. Does not limit
+      UniFi OS as a whole.
   memory_init:
     name: Initial Memory
     description: >-
-      This option allows you to change the amount of memory the UniFi Network
-      Application will initially reserve/consume when starting.
+      Initial Java memory (heap), in MB, for the UniFi Network application
+      inside UniFi OS. Must not be larger than Max Memory. Leave empty to use
+      Ubiquiti's default.
+  ingress_allow_insecure_http:
+    name: Allow insecure HTTP ingress
+    description: >-
+      Off by default. Lets the UniFi console open inside Home Assistant when
+      Home Assistant is reached over plain HTTP, by removing the Secure
+      protection from UniFi's login cookies. Your UniFi password and session
+      then travel unencrypted. Use only on a trusted network; HTTPS is strongly
+      preferred. Does not affect the direct HTTPS console. Restart the app
+      after changing it.
 network:
-  161/udp: Used for SNMP Access
-  1900/udp: L2 discoverable port
-  3478/udp: Used for STUN
-  5514/udp: Used for remote syslog debugging
-  6789/tcp: Used for UniFi mobile speed test
-  8080/tcp: Used for device and controller communication
-  8443/tcp: Used for controller web interface and API
-  8843/tcp: Used for HTTPS portal redirection
-  8880/tcp: Used for HTTP portal redirection
-  10001/udp: Used for device discovery
+  161/udp: Kept from the previous version (SNMP); the app adds no SNMP service
+  1900/udp: Kept from the previous version (SSDP); the app adds no SSDP service
+  3478/udp: STUN
+  5514/udp: Remote syslog from UniFi devices
+  5671/tcp: Other UniFi OS service
+  6789/tcp: UniFi mobile speed test
+  8080/tcp: Device inform (device to controller communication)
+  8443/tcp: Previous console port (relayed to the UniFi OS console, 11443/TCP)
+  8843/tcp: Previous HTTPS guest portal port (relayed to 8444/TCP)
+  8880/tcp: HTTP guest portal
+  8881/tcp: Other UniFi OS service
+  8882/tcp: Other UniFi OS service
+  9543/tcp: UniFi Identity Hub
+  10001/udp: Previous device discovery port (relayed to 10003/UDP)
+  11443/tcp: UniFi OS console (HTTPS web interface)
+  8444/tcp: HTTPS guest portal
+  10003/udp: UniFi OS device discovery
+  28082/tcp: Other UniFi OS service

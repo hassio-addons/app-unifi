@@ -1,0 +1,40 @@
+#!/bin/bash
+# App-owned build adapter.
+set -euo pipefail
+
+# Preserve the original app's binary/libraries, not a newer database stage.
+target=/legacy-runtime
+mkdir -p "${target}"
+case "$(dpkg --print-architecture)" in
+    arm64) loader=/lib/ld-linux-aarch64.so.1 ;;
+    amd64) loader=/lib64/ld-linux-x86-64.so.2 ;;
+    *) exit 1 ;;
+esac
+cp -L "${loader}" "${target}/loader"
+files=("${loader}")
+for binary in /usr/bin/mongod /usr/bin/mongo; do
+    cp -L --parents "${binary}" "${target}"
+    files+=("${binary}")
+    dependencies=$(ldd "${binary}")
+    if grep -q 'not found' <<< "${dependencies}"; then
+        echo "Incomplete legacy MongoDB runtime" >&2
+        exit 1
+    fi
+    while IFS= read -r library; do
+        cp -L --parents "${library}" "${target}"
+        files+=("${library}")
+    done < <(awk '/=> \// {print $3} /^[[:space:]]*\// {print $1}' <<< "${dependencies}")
+done
+
+# Redistributed binaries keep their package licence/copyright notices.
+mkdir -p "${target}/licenses"
+for package in $(for file in "${files[@]}"; do
+    dpkg -S "$(readlink -f "${file}")" 2>/dev/null || dpkg -S "${file}"
+done | cut -d: -f1 | sort -u); do
+    for notice in /usr/share/doc/"${package}"/{copyright,LICENSE*,MPL-2,THIRD-PARTY-NOTICES*}; do
+        if [[ -f "${notice}" ]]; then
+            cp "${notice}" "${target}/licenses/${package}.$(basename "${notice}")"
+        fi
+    done
+done
+ls "${target}"/licenses/*.copyright >/dev/null

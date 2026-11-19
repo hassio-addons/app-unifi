@@ -1,0 +1,70 @@
+#include <tunables/global>
+
+# The trusted installer and nested rootless runtime need broad filesystem and
+# mount access. Keep kernel-wide controls and raw host devices out of bounds.
+# Linux PID/cgroup/user namespaces and the dropped capability set are additional
+# boundaries, not substitutes for this enforcing outer profile.
+# Supervisor renames this profile to the app slug: <repository hash>_unifi,
+# or local_unifi for a local app. "unifi" is the name when loaded directly.
+profile unifi flags=(attach_disconnected,mediate_deleted) {
+  #include <abstractions/base>
+  file,
+  network,
+  dbus,
+  capability,
+  signal,
+  # Rootless Podman joins its namespaces through /proc/<pid>/ns and journald
+  # reads /proc/<pid>/exe; both are ptrace read checks. Only this app's own
+  # processes (the nested runtime keeps this profile) are peers.
+  ptrace peer=unifi,
+  ptrace peer=local_unifi,
+  ptrace peer=[0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]_unifi,
+  mount,
+  umount,
+  pivot_root,
+
+  # Nested containers may retain the current app profile, never unconfined.
+  change_profile -> unifi,
+  change_profile -> local_unifi,
+  change_profile -> [0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]_unifi,
+
+  audit deny /{,**/}sysrq-trigger wklx,
+  # systemd/crun must self-bind this file to mask/remount it read-only. Permit
+  # targets named sysrq-trigger (still write-denied everywhere), but deny every
+  # other basename so bind-mount aliases cannot escape the write restriction.
+  audit deny mount /{,**/}sysrq-trigger -> /{,**/}{[^s]*,s,s[^y]*,sy,sy[^s]*,sys,sys[^r]*,sysr,sysr[^q]*,sysrq,sysrq[^-]*,sysrq-,sysrq-[^t]*,sysrq-t,sysrq-t[^r]*,sysrq-tr,sysrq-tr[^i]*,sysrq-tri,sysrq-tri[^g]*,sysrq-trig,sysrq-trig[^g]*,sysrq-trigg,sysrq-trigg[^e]*,sysrq-trigge,sysrq-trigge[^r]*,sysrq-trigger?*},
+  deny /proc/kcore rw,
+  deny /{,**/}sys/kernel{,/**} wklx,
+  deny /{,**/}sys/vm{,/**} wklx,
+  # Host-wide controls under any alias of /sys or /proc/sys.
+  audit deny /{,**/}power/state wklx,
+  audit deny /{,**/}fs/binfmt_misc{,/**} wklx,
+  # Protected subtree aliases must not evade the pathname write restrictions.
+  audit deny mount /{,**/}sys/{kernel,vm}{,/**} -> /**,
+  audit deny mount /{,**/}sys{,/} -> /{,**/}{[^s]*,s,s[^y]*,sy,sy[^s]*,sys?*}{,/},
+  audit deny /sys/kernel/security{,/**} wklx,
+  deny /sys/module{,/**} wklx,
+  deny /sys/firmware{,/**} rwklx,
+  deny /dev/{mem,kmem,port,sd*,vd*,nvme*,mmcblk*,mapper/**,disk/**} rwklx,
+  deny mount /dev/{mem,kmem,port,sd*,vd*,nvme*,mmcblk*,mapper/**,disk/**} -> /**,
+
+  # Kernel-wide filesystems that no part of this app mounts.
+  audit deny mount fstype=binfmt_misc,
+  audit deny mount fstype=debugfs,
+  audit deny mount fstype=tracefs,
+  audit deny mount fstype=bpf,
+  audit deny mount fstype=configfs,
+  audit deny mount fstype=efivarfs,
+  audit deny mount fstype=pstore,
+  audit deny mount fstype=cgroup,
+  # The worker mounts securityfs read-only at /sys/kernel/security/ (whose
+  # contents are write-denied above); every other target is denied.
+  audit deny mount fstype=securityfs -> /{,[^s]**,s,s[^y]**,sy,sy[^s]**,sys,sys[^/]**,sys/,sys/[^k]**,sys/k,sys/k[^e]**,sys/ke,sys/ke[^r]**,sys/ker,sys/ker[^n]**,sys/kern,sys/kern[^e]**,sys/kerne,sys/kerne[^l]**,sys/kernel,sys/kernel[^/]**,sys/kernel/,sys/kernel/[^s]**,sys/kernel/s,sys/kernel/s[^e]**,sys/kernel/se,sys/kernel/se[^c]**,sys/kernel/sec,sys/kernel/sec[^u]**,sys/kernel/secu,sys/kernel/secu[^r]**,sys/kernel/secur,sys/kernel/secur[^i]**,sys/kernel/securi,sys/kernel/securi[^t]**,sys/kernel/securit,sys/kernel/securit[^y]**,sys/kernel/security[^/]**,sys/kernel/security/?**},
+  # A new sysfs is writable; only allow it at a directory named sys, where
+  # the alias-proof write denials above apply (rootless crun mounts there).
+  audit deny mount fstype=sysfs -> /{,**/}{[^s]*,s,s[^y]*,sy,sy[^s]*,sys?*}{,/},
+  # Docker mounts /sys read-only: never remount it (or a submount other than
+  # the private cgroup tree systemd manages) read-write. Read-only remounts,
+  # as systemd sandboxing performs, have the ro flag and are not matched.
+  audit deny remount options in (bind, nosuid, nodev, noexec, sync, dirsync, mand, noatime, nodiratime, relatime, strictatime, silent) /sys/{,[^f]**,f,f[^s]**,fs,fs[^/]**,fs/,fs/[^c]**,fs/c,fs/c[^g]**,fs/cg,fs/cg[^r]**,fs/cgr,fs/cgr[^o]**,fs/cgro,fs/cgro[^u]**,fs/cgrou,fs/cgrou[^p]**,fs/cgroup[^/]**},
+}

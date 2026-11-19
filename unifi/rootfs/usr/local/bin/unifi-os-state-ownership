@@ -1,0 +1,44 @@
+#!/bin/bash
+# Keep the vendor state directory (/var/lib/uosserver) root-owned. The root
+# updater executes binaries below it, so UID 1001 must not be able to rename
+# or replace its entries. Only the entries the rootless runtime writes stay
+# owned by uosserver. Never recursive: their contents are left untouched.
+set -euo pipefail
+unset SUPERVISOR_TOKEN HASSIO_TOKEN
+
+# The optional argument is for isolated tests; units use the fixed default.
+[[ $# -le 1 ]] || { echo "Expected an optional runtime root only" >&2; exit 2; }
+readonly root=${1:-/var/lib/unifi-os-app/uos}
+readonly state="${root}/state"
+
+fail() {
+    echo "UniFi OS state ownership refused: $*" >&2
+    /usr/local/bin/unifi-os-alert vendor_state_untrusted "UniFi OS files have unsafe ownership" \
+        "The UniFi OS state directory failed a safety check ($*), so UniFi OS was not started. The files may have been modified by the nested runtime. Restore a backup of this app." || true
+    exit 1
+}
+
+[[ -d "${root}" && ! -L "${root}" ]] || fail "runtime root is not a directory"
+chown root:root "${root}"
+# UID 1001 must traverse it to reach its home; a root-only mode fails the
+# vendor installer with a misleading "mkdir: Already exists".
+chmod 0755 "${root}"
+[[ ! -L "${state}" ]] || fail "state directory is a symlink"
+mkdir -p "${state}"
+# First take the directory away from UID 1001, then inspect its entries: from
+# this point on they can no longer be swapped.
+chown root:root "${state}"
+chmod 0755 "${state}"
+for entry in logs server.conf; do
+    path="${state}/${entry}"
+    [[ -e "${path}" || -L "${path}" ]] || continue
+    [[ ! -L "${path}" ]] || fail "${entry} is a symlink"
+    case "${entry}" in
+        logs) [[ -d "${path}" ]] || fail "logs is not a directory" ;;
+        server.conf) [[ -f "${path}" ]] || fail "server.conf is not a regular file" ;;
+    esac
+    chown -h uosserver:uosserver "${path}"
+done
+if [[ -f "${state}/server.conf" ]]; then
+    chmod 0640 "${state}/server.conf"
+fi

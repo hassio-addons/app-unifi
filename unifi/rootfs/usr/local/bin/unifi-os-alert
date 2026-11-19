@@ -1,0 +1,23 @@
+#!/bin/bash
+# Record a user-facing alert for delivery as a Home Assistant notification.
+# Alerts are plain text with fixed IDs; never pass secrets or API bodies.
+set -euo pipefail
+unset SUPERVISOR_TOKEN HASSIO_TOKEN
+
+readonly directory=/run/unifi-os-alerts
+usage() { echo "Usage: unifi-os-alert ID TITLE MESSAGE | --startup-complete" >&2; exit 2; }
+
+if [[ $# -eq 1 && "$1" == --startup-complete ]]; then
+    # Lets the notifier withdraw earlier start-failure notifications.
+    [[ ! -d "${directory}" || -L "${directory}" ]] || : > "${directory}/startup-complete"
+    exit 0
+fi
+[[ $# -eq 3 && "$1" =~ ^[a-z][a-z0-9_]{0,47}$ && -n "$2" && -n "$3" ]] || usage
+echo "UniFi OS alert (${1}): ${2}. ${3}" >&2
+# Before the entrypoint creates the directory there is nowhere to deliver from.
+[[ -d "${directory}" && ! -L "${directory}" ]] || exit 0
+temporary=$(mktemp "${directory}/.alert.XXXXXX")
+trap 'rm -f "${temporary}"' EXIT
+printf '%s\n%s\n' "${2//$'\n'/ }" "$3" > "${temporary}"
+chmod 0644 "${temporary}"
+mv -f "${temporary}" "${directory}/$1"

@@ -1,0 +1,17 @@
+#!/bin/bash
+# App-owned container adapter.
+set -euo pipefail
+
+# Runtime selection only: no database preparation or vendor-code replacement.
+version=$1
+binary=$2
+shift 2
+case "${version}" in
+    3.6) runtime=/opt/unifi-legacy-mongo; executable="${runtime}/usr/bin/${binary}" ;;
+    4.0|4.2|4.4) runtime="/opt/unifi-mongo/${version}"; executable="${runtime}/bin/${binary}" ;;
+    *) echo "Unsupported legacy MongoDB runtime: ${version}" >&2; exit 1 ;;
+esac
+[[ "${binary}" == mongod || "${binary}" == mongo ]] || exit 1
+[[ -f "${runtime}/loader" ]] || { echo "Invalid MongoDB runtime" >&2; exit 1; }
+libraries=$(find "${runtime}" -name '*.so*' -printf '%h\n' | sort -u | paste -sd :)
+exec "${runtime}/loader" --library-path "${libraries}" "${executable}" "$@"

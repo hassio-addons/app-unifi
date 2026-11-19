@@ -1,42 +1,83 @@
 ---
-name: UniFi Network Application
+name: UniFi OS Server
 version: dev
 slug: unifi
-description: Manage your UniFi network using a web browser
+description: UniFi OS Server with vendor-native import of the retained Network app
 url: https://github.com/hassio-addons/app-unifi
-webui: https://[HOST]:[PORT:8443]
+breaking_versions:
+  - 6.0.0
+panel_icon: mdi:lan
+ingress: true
+ingress_entry: /ha/login_redirect/
+# Stream request bodies (e.g. a .unf restore upload) instead of buffering them.
+ingress_stream: true
 startup: services
 arch:
   - aarch64
   - amd64
 init: false
+homeassistant_api: true
+timeout: 300
+# Supervisor stops the app for each backup. The stop writes a verified
+# checkpoint of the nested runtime; its raw directories are excluded because a
+# plain directory copy cannot preserve their ownership and overlay whiteouts.
 backup: cold
+backup_exclude:
+  - "*/uos/home"
+  - "*/uos/state"
 map:
-  - backup:rw
+  - type: data
+    path: /lib/unifi/data
+    read_only: false
+  - type: backup
+    read_only: true
+privileged:
+  - SYS_ADMIN
+devices:
+  - /dev/net/tun
 ports:
   161/udp: null
   1900/udp: null
+  8443/tcp: 8443
   3478/udp: 3478
   5514/udp: 5514
+  5671/tcp: null
   6789/tcp: 6789
   8080/tcp: 8080
-  8443/tcp: 8443
   8843/tcp: 8843
   8880/tcp: 8880
+  8881/tcp: null
+  8882/tcp: null
+  9543/tcp: null
   10001/udp: 10001
+  11443/tcp: 11443
+  8444/tcp: 8444
+  10003/udp: 10003
+  28082/tcp: null
 ports_description:
-  161/udp: Used for SNMP Access
-  1900/udp: L2 discoverable port
-  3478/udp: Used for STUN
-  5514/udp: Used for remote syslog debugging
-  6789/tcp: Used for UniFi mobile speed test
-  8080/tcp: Used for device and controller communication
-  8443/tcp: Used for controller web interface and API
-  8843/tcp: Used for HTTPS portal redirection
-  8880/tcp: Used for HTTP portal redirection
-  10001/udp: Used for device discovery
-hassio_api: true
+  161/udp: Legacy optional SNMP mapping (no added SNMP service)
+  1900/udp: Legacy optional SSDP mapping (no added SSDP service)
+  8443/tcp: Legacy UniFi OS console mapping (alias to vendor port 11443)
+  3478/udp: STUN
+  5514/udp: Remote syslog
+  5671/tcp: UniFi bundled service
+  6789/tcp: UniFi mobile speed test
+  8080/tcp: Device inform
+  8843/tcp: Legacy HTTPS captive portal mapping (alias to vendor port 8444)
+  8880/tcp: HTTP captive portal
+  8881/tcp: UniFi bundled service
+  8882/tcp: UniFi bundled service
+  9543/tcp: Identity Hub
+  10001/udp: Legacy UniFi OS discovery mapping (alias to vendor port 10003)
+  11443/tcp: UniFi OS console (vendor port)
+  8444/tcp: HTTPS captive portal (vendor port)
+  10003/udp: UniFi OS discovery (vendor port)
+  28082/tcp: UniFi bundled service
+# Keep the original option and port keys so Supervisor retains user settings.
+options:
+  ingress_allow_insecure_http: false
 schema:
   log_level: list(trace|debug|info|notice|warning|error|fatal)?
   memory_max: int?
   memory_init: int?
+  ingress_allow_insecure_http: bool

@@ -6,74 +6,55 @@
   "labels": ["dependencies"],
   "commitMessagePrefix": "⬆️",
   "commitMessageTopic": "{{depName}}",
-  "customDatasources": {
-    "unifi": {
-      "defaultRegistryUrlTemplate": "https://fw-update.ubnt.com/api/firmware-latest?filter=eq~~product~~unifi-controller&filter=eq~~channel~~release",
-      "format": "json",
-      "transformTemplates": [
-        "{ \"releases\": [$distinct($._embedded.firmware.$substringBefore($substringAfter(version, \"v\"), \"+\")) ~> $map(function($v) { { \"version\": $v } })] }"
-      ]
-    }
-  },
   "customManagers": [
-    {
-      "customType": "regex",
-      "managerFilePatterns": ["//Dockerfile$/", "//build.yaml$/"],
-      "matchStringsStrategy": "any",
-      "matchStrings": [
-        "ARG BUILD_FROM=(?<depName>.*?):(?<currentValue>.*?)\\s+",
-        "(aarch64|amd64):\\s[\"']?(?<depName>.*?):(?<currentValue>.*?)[\"']?\\s"
-      ],
-      "datasourceTemplate": "docker"
-    },
     {
       "customType": "regex",
       "managerFilePatterns": ["//Dockerfile$/"],
       "matchStringsStrategy": "any",
       "matchStrings": [
-        "\\s\\s(?<package>[a-z0-9][a-z0-9-]+)=(?<currentValue>[a-z0-9-:_+~.]+)\\s+"
+        "\\s\\s(?<package>[a-z0-9][a-z0-9.+-]+)=(?<currentValue>[a-z0-9-:_+~.]+)\\s+"
       ],
       "versioningTemplate": "deb",
       "datasourceTemplate": "deb",
       "depNameTemplate": "{{{package}}}"
-    },
-    {
-      "customType": "regex",
-      "managerFilePatterns": ["//Dockerfile$/"],
-      "matchStrings": [
-        "https://dl\\.ui\\.com/unifi/(?<currentValue>.*?)/unifi_sysvinit_all\\.deb"
-      ],
-      "depNameTemplate": "unifi",
-      "datasourceTemplate": "custom.unifi",
-      "versioningTemplate": "semver"
     }
   ],
   "packageRules": [
     {
+      "description": "Ubuntu 26.04 packages of the app image",
       "matchDatasources": ["deb"],
       "registryUrls": [
-        "https://archive.ubuntu.com/ubuntu?suite=focal&components=main,restricted,universe,multiverse&binaryArch=amd64",
-        "https://archive.ubuntu.com/ubuntu?suite=focal-updates&components=main,restricted,universe,multiverse&binaryArch=amd64",
-        "https://archive.ubuntu.com/ubuntu?suite=focal-backports&components=main,restricted,universe,multiverse&binaryArch=amd64",
-        "https://security.ubuntu.com/ubuntu?suite=focal-security&components=main,restricted,universe,multiverse&binaryArch=amd64"
+        "https://archive.ubuntu.com/ubuntu?suite=resolute&components=main,restricted,universe,multiverse&binaryArch=amd64",
+        "https://archive.ubuntu.com/ubuntu?suite=resolute-updates&components=main,restricted,universe,multiverse&binaryArch=amd64",
+        "https://security.ubuntu.com/ubuntu?suite=resolute-security&components=main,restricted,universe,multiverse&binaryArch=amd64"
       ],
       "automerge": true
     },
     {
-      "groupName": "App base image",
-      "matchDatasources": ["docker"],
-      "matchDepNames": ["ghcr.io/hassio-addons/ubuntu-base"]
+      "description": "Final Ubuntu 18.04 pins of the EOL MongoDB build stage",
+      "matchDatasources": ["deb"],
+      "matchDepNames": [
+        "ca-certificates",
+        "curl",
+        "libcurl4",
+        "libssl1.0.0",
+        "libssl1.1"
+      ],
+      "matchCurrentValue": "/^(20230311ubuntu0\\.18\\.04\\.1|7\\.58\\.0-2ubuntu3\\.24|1\\.0\\.2n-1ubuntu5\\.13|1\\.1\\.1-1ubuntu2\\.1~18\\.04\\.23)$/",
+      "enabled": false
     },
     {
       "groupName": "App base image",
       "matchDatasources": ["docker"],
-      "matchUpdateTypes": ["minor", "patch"],
-      "matchDepNames": ["ghcr.io/hassio-addons/ubuntu-base"],
-      "automerge": true
+      "matchDepNames": ["ubuntu"],
+      "matchCurrentValue": "26.04"
     },
     {
-      "matchDatasources": ["custom.unifi"],
-      "commitMessageTopic": "UniFi Network Application"
+      "description": "Legacy MongoDB 3.6 runtime source and the EOL MongoDB build stage are pinned on purpose",
+      "matchDatasources": ["docker"],
+      "matchDepNames": ["ghcr.io/hassio-addons/unifi", "ubuntu"],
+      "matchCurrentValue": "/^(5\\.3\\.2|18\\.04)$/",
+      "enabled": false
     }
   ]
 }

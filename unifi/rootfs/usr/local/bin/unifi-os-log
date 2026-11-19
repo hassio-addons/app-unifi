@@ -1,0 +1,28 @@
+#!/bin/bash
+set -euo pipefail
+priority=$(jq -er '.priority | select(type == "number" and . >= 0 and . <= 7)' /run/unifi-os-options.json)
+# Exact unit names: journalctl expands --unit globs only against units that
+# already logged when it starts, which misses units that start later. Each
+# --unit also matches the service manager's messages about that unit, and
+# init.scope carries the manager's own messages, including failures of any
+# other unit (such as user@1001.service). The rootless user manager itself
+# is not forwarded: it logs a line for every podman invocation.
+units=(
+    init.scope
+    unifi.service
+    unifi-os-bootstrap.service
+    unifi-os-fatal.service
+    unifi-os-shutdown-checkpoint.service
+    uosserver.service
+    uosserver-updater.service
+    unifi-os-ingress.service
+    unifi-os-console-port.service
+    unifi-os-port-alias@8443.service
+    unifi-os-port-alias@8843.service
+    unifi-os-port-alias@10001.service
+    unifi-os-setup-notification.service
+    unifi-os-setup-status.service
+    unifi-os-alert-notification.service
+)
+exec /usr/bin/journalctl --priority="${priority}" --follow --no-pager --output=short \
+    "${units[@]/#/--unit=}"

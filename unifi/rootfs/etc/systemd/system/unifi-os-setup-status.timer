@@ -1,0 +1,12 @@
+[Unit]
+Description=Refresh UniFi's read-only setup-status observation
+ConditionPathExists=!/var/lib/unifi-os-app/uos/setup-status/complete
+
+[Timer]
+OnBootSec=30
+OnUnitInactiveSec=30
+AccuracySec=1
+Unit=unifi-os-setup-status.service
+
+[Install]
+WantedBy=timers.target

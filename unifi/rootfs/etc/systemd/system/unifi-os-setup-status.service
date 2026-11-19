@@ -1,0 +1,36 @@
+[Unit]
+Description=Read UniFi's explicit setup status without an HA credential
+After=unifi-os-bootstrap.service
+ConditionPathExists=/run/user/1001/unifi-rootless-ready
+# Sampling ends once the vendor explicitly reported setup as complete.
+ConditionPathExists=!/var/lib/unifi-os-app/uos/setup-status/complete
+
+[Service]
+Type=oneshot
+User=uosserver
+Group=uosserver
+Environment=HOME=/home/uosserver XDG_RUNTIME_DIR=/run/user/1001
+ExecStart=/usr/bin/python3 /usr/share/unifi-os/setup-status.py
+TimeoutStartSec=20
+RuntimeDirectory=unifi-os-setup-status
+RuntimeDirectoryMode=0755
+RuntimeDirectoryPreserve=yes
+# Runs every 30 seconds until setup completes: keep the manager's routine
+# start/finish messages out of the app log; warnings and failures still show.
+LogLevelMax=notice
+NoNewPrivileges=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
+RestrictAddressFamilies=AF_UNIX
+# Rootless podman exec joins the runtime's user and mount namespaces, so
+# RestrictNamespaces= and ProtectHome= (HOME is below /home) are not usable.
+# Before joining, podman writes only its storage locks and runtime state.
+ProtectSystem=strict
+ReadWritePaths=/var/lib/unifi-os-app/uos/home /run/user/1001 -/var/lib/unifi-os-app/uos/setup-status
+PrivateTmp=yes
+ProtectKernelTunables=no
+ProtectKernelModules=yes
+SystemCallArchitectures=native
+LockPersonality=yes
+RestrictRealtime=yes
+# No RestrictSUIDSGID=: its filter breaks archive tools Podman may use.

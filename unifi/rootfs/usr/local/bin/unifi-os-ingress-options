@@ -1,0 +1,18 @@
+#!/bin/bash
+# Publish only a validated boolean, never the user's complete options or secrets.
+set -euo pipefail
+input=${1:-/run/unifi-os-options.json}
+output=${2:-/run/unifi-os-ingress-policy.conf}
+enabled=$(jq -er '
+    .ingress_allow_insecure_http |
+    if . == true then 1 elif . == false then 0 else error("invalid ingress boolean") end
+' "${input}")
+umask 022
+# The dollar-prefixed name belongs to nginx, not this shell.
+# shellcheck disable=SC2016
+printf 'map "" $ingress_http_compat_enabled { default %s; }\n' "${enabled}" > "${output}.tmp"
+chmod 0644 "${output}.tmp"
+mv "${output}.tmp" "${output}"
+if [[ "${enabled}" == 1 ]]; then
+    echo "WARNING: Insecure HTTP ingress enabled: login/session cookies lose Secure and Partitioned protections. Use HTTPS instead on untrusted networks." >&2
+fi

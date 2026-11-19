@@ -1,0 +1,24 @@
+[Unit]
+Description=Checkpoint the quiesced UniFi runtime on outer shutdown
+# Startup ordering reverses on shutdown: both vendor services stop before this
+# unit checkpoints, and the user bus/runtime stay alive until it finishes.
+Before=uosserver.service uosserver-updater.service
+Requires=user@1001.service
+After=user@1001.service
+
+[Service]
+Type=oneshot
+ExecStart=/bin/true
+RemainAfterExit=yes
+ExecStop=/usr/local/bin/unifi-os-shutdown-checkpoint
+TimeoutStopSec=150
+# Keeps all capabilities: the worker's private namespace and mounts need
+# SYS_ADMIN, Podman's ID mapping SETUID/SETGID, and tar reads/writes mapped
+# owners and trusted.* xattrs. No mount sandboxing for the same reasons.
+SystemCallArchitectures=native
+LockPersonality=yes
+RestrictRealtime=yes
+# No RestrictSUIDSGID=: its filter makes GNU tar's stat calls fail (ENOSYS).
+
+[Install]
+WantedBy=multi-user.target

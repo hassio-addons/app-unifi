@@ -1,0 +1,28 @@
+#!/bin/bash
+# App-owned container adapter.
+set -euo pipefail
+unset SUPERVISOR_TOKEN HASSIO_TOKEN
+
+[[ ! -w /proc/sysrq-trigger ]]
+
+profile=$(cat /proc/self/attr/current)
+# Same accepted profile names as the entrypoint (see apparmor.txt).
+[[ "${profile}" =~ ^([0-9a-f]{8}_|local_)?unifi\ \(enforce\)$ ]]
+for unit in unifi-os-bootstrap.service uosserver.service unifi-os-ingress.service \
+    unifi-os-port-alias@8443.service unifi-os-port-alias@8843.service \
+    unifi-os-port-alias@10001.service; do
+    systemctl is-active --quiet "${unit}"
+done
+
+systemctl is-active --quiet uosserver-updater.service
+
+uid=$(id -u uosserver)
+[[ -f "/run/user/${uid}/unifi-rootless-ready" ]]
+pid=$(systemctl show uosserver.service --property=MainPID --value)
+[[ "$(awk '/^Uid:/{print $3}' "/proc/${pid}/status")" == "${uid}" ]]
+# setpriv, not runuser: no PAM session lines in the log every 30 seconds.
+setpriv --reuid=uosserver --regid=uosserver --init-groups --inh-caps=-all \
+    env HOME=/home/uosserver USER=uosserver LOGNAME=uosserver "XDG_RUNTIME_DIR=/run/user/${uid}" \
+    podman exec uosserver /bin/bash -c \
+    'systemctl is-active --quiet unifi && curl -fsS --max-time 5 http://127.0.0.1/api/ping >/dev/null'
+curl -kfsS --max-time 5 -o /dev/null https://127.0.0.1:11443/

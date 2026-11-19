@@ -1,0 +1,56 @@
+[Unit]
+Description=UniFi Home Assistant ingress proxy
+After=network.target
+# The port publisher runs alongside, never as a start dependency: nginx must
+# not wait on Supervisor. The bridge reads the port on every request.
+Wants=unifi-os-console-port.service
+# Always enabled: Supervisor ingress is declared in the manifest. The policy is
+# regenerated below before every start, so the unit never depends on startup
+# ordering and never silently skips; a generation failure fails visibly.
+
+[Service]
+Type=exec
+# "+" runs only this root-owned, validated-boolean generator with privileges.
+ExecStartPre=+/usr/local/bin/unifi-os-ingress-options
+ExecStartPre=/usr/sbin/nginx -t -c /etc/unifi-os/ingress.conf
+ExecStart=/usr/sbin/nginx -c /etc/unifi-os/ingress.conf -g "daemon off;"
+# Never signal a reload into a configuration nginx would reject.
+ExecReload=/usr/sbin/nginx -t -c /etc/unifi-os/ingress.conf
+ExecReload=/bin/kill -HUP $MAINPID
+KillSignal=SIGQUIT
+TimeoutStopSec=15
+DynamicUser=yes
+RuntimeDirectory=unifi-os-ingress
+RuntimeDirectoryMode=0700
+# Stable, unprivileged projection directory: exists before systemd starts, so
+# the ingress unit's read-only bind never depends on the publisher's timing.
+# The publisher writes only the validated console port number here.
+BindReadOnlyPaths=/run/unifi-os-console-port:/run/unifi-os-ingress-port
+NoNewPrivileges=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
+PrivateDevices=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=yes
+# Use Docker's read-only /proc/sys and enforcing app profile, as for port aliases.
+ProtectKernelTunables=no
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictNamespaces=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+# Seccomp-backed restrictions, as RestrictNamespaces=/RestrictAddressFamilies=
+# already rely on. ProtectKernelLogs only masks /proc/kmsg and /dev/kmsg.
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
+LockPersonality=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+ProtectKernelLogs=yes
+ProtectClock=yes
+UMask=0077
+Restart=on-failure
+
+[Install]
+WantedBy=multi-user.target

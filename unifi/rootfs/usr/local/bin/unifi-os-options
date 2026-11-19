@@ -1,0 +1,24 @@
+#!/bin/bash
+set -euo pipefail
+input=${1:-/var/lib/unifi-os-app/options.json}
+output=${2:-/run/unifi-os-options.json}
+json='{}'
+[[ ! -f "${input}" ]] || json=$(cat "${input}")
+if ! jq -e '
+    def integer: type == "number" and floor == .;
+    type == "object" and
+    (.memory_max == null or (.memory_max | integer and . > 0)) and
+    (.memory_init == null or (.memory_init | integer and . >= 0)) and
+    (.memory_max == null or .memory_init == null or .memory_init <= .memory_max) and
+    ((has("ingress_allow_insecure_http") | not) or
+        (.ingress_allow_insecure_http | type == "boolean")) and
+    (.log_level == null or (.log_level as $level |
+        ["trace","debug","info","notice","warning","error","fatal"] | index($level) != null))
+' <<< "${json}" >/dev/null 2>&1; then
+    echo "Invalid retained UniFi heap/log/ingress options" >&2
+    exit 1
+fi
+umask 077
+jq '{memory_max, memory_init, ingress_allow_insecure_http: (.ingress_allow_insecure_http // false), priority: ({trace:7,debug:7,info:6,notice:5,warning:4,error:3,fatal:2}[.log_level // "info"])}' \
+    <<< "${json}" > "${output}.tmp"
+mv "${output}.tmp" "${output}"

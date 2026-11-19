@@ -1,0 +1,129 @@
+#!/bin/bash
+# App-owned container adapter.
+set -euo pipefail
+
+readonly saved=/var/lib/unifi-os-app/uos/bootstrap
+version=$(cat /opt/unifi-os/version)
+readonly version
+readonly receipt="${saved}/installed-version"
+
+alert() { /usr/local/bin/unifi-os-alert "$@" || true; }
+fail() {
+    local id=$1 title=$2 detail=$3
+    echo "UniFi OS bootstrap failed: ${detail}" >&2
+    alert "${id}" "${title}" "${detail}. See the app log; restart the app to retry."
+    exit 1
+}
+# Keep the failing step's exit status (tests and logs rely on it).
+step() {
+    local id=$1 title=$2 message=$3 status=0
+    shift 3
+    "$@" || status=$?
+    if (( status )); then
+        alert "${id}" "${title}" "${message}"
+        exit "${status}"
+    fi
+}
+
+# Recheck the mount-only layout even if the vendor previously disabled the
+# harmless unit. A failed layout must not masquerade as legacy discovery.
+if [[ -f /var/lib/unifi-os-app/unifi/data/system.properties ]]; then
+    step legacy_layout_failed "Retained UniFi Network data could not be attached" \
+        "The data of the previous UniFi Network app could not be mounted where UniFi OS expects it, so UniFi OS was not started and nothing was imported or changed. See the app log for the reason." \
+        /usr/local/bin/unifi-os-legacy-layout
+fi
+
+step mongo_preparation_failed "Retained UniFi Network database could not be prepared" \
+    "Upgrading the previous UniFi Network database for UniFi OS failed, so UniFi OS was not started. A verified copy of the original database files is kept in the app data (mongo-originals/originals.tar) once it has been created. See the app log for the failing step." \
+    /usr/local/bin/unifi-os-prepare-mongo
+
+install_vendor() {
+    step vendor_install_failed "UniFi OS installation did not finish" \
+        "Ubiquiti's UniFi OS installer failed or was interrupted. The app was stopped and will refuse to start over the incomplete installation. Restore a backup of this app made before the installation or update; see the app log for the installer output." \
+        unshare --mount --propagation private /usr/local/bin/unifi-os-worker installer
+}
+
+save_installation() {
+    grep -Fxq "APP_VERSION=${version}" /var/lib/uosserver/server.conf \
+        || fail vendor_install_failed "UniFi OS installation did not finish" \
+            "vendor installer did not record the requested version"
+    systemctl disable uosserver.service uosserver-updater.service
+    for command in uosserver uosserver-purge; do
+        install -m 0755 "/usr/local/bin/${command}" "${saved}/${command}"
+    done
+    for unit in uosserver.service uosserver-updater.service; do
+        install -m 0644 "/etc/systemd/system/${unit}" "${saved}/${unit}"
+    done
+    printf '%s\n' "${version}" > "${receipt}.tmp"
+    sync -f "${receipt}.tmp"
+    mv "${receipt}.tmp" "${receipt}"
+    sync -f "${receipt}"
+    # The root installer may set its own ownership; restore the boundary that
+    # keeps root-executed vendor binaries out of UID 1001's reach.
+    step vendor_state_untrusted "UniFi OS files have unsafe ownership" \
+        "The UniFi OS state directory could not be secured after installation. See the app log." \
+        /usr/local/bin/unifi-os-state-ownership
+}
+
+if [[ -f "${receipt}" ]]; then
+    installed=$(cat "${receipt}")
+    grep -Fxq "APP_VERSION=${installed}" /var/lib/uosserver/server.conf \
+        || fail os_version_drift "UniFi OS version changed outside the app" \
+            "vendor OS version drift/partial update; restore a matching cold backup or inspect before recovery"
+    dpkg --compare-versions "${version}" ge "${installed}" \
+        || fail os_downgrade "This app version is older than the installed UniFi OS" \
+            "refusing an OS binary downgrade over newer data; restore the matching complete app backup"
+
+    # HA rebuild/update recreates the outer container. Restore its vendor units
+    # and commands; all inner storage remains in the persistent data-root alias.
+    for command in uosserver uosserver-purge; do
+        [[ -f "${saved}/${command}" ]] \
+            || fail bootstrap_failed "UniFi OS failed to start" "missing saved ${command}"
+        install -m 0755 "${saved}/${command}" "/usr/local/bin/${command}"
+    done
+    for unit in uosserver.service uosserver-updater.service; do
+        [[ -f "${saved}/${unit}" ]] \
+            || fail bootstrap_failed "UniFi OS failed to start" "missing saved ${unit}"
+        install -m 0644 "${saved}/${unit}" "/etc/systemd/system/${unit}"
+    done
+    systemctl daemon-reload
+    loginctl enable-linger uosserver
+    systemctl start "user@$(id -u uosserver).service"
+    if [[ "${installed}" == "${version}" ]]; then
+        step vendor_start_failed "UniFi OS services did not start" \
+            "The UniFi OS services failed to start. If the app log reports unsafe ownership of UniFi OS files, the files may have been tampered with; restore a backup of this app." \
+            systemctl start uosserver.service uosserver-updater.service
+        echo "Existing UniFi OS ${version} state restored; waiting for readiness."
+    else
+        # The unchanged vendor installer supports install/update. Supervisor
+        # already stopped the old outer app; no custom controller-stop or data
+        # conversion step is added here. Never pass --force-install.
+        echo "Updating UniFi OS ${installed} to pinned ${version} with the vendor installer."
+        install_vendor
+        save_installation
+    fi
+else
+    # Do not reinstall over partial state or silently replace an existing OS.
+    [[ ! -e /var/lib/uosserver/server.conf ]] \
+        || fail partial_installation "An unfinished UniFi OS installation was found" \
+            "partial/existing installation without receipt; inspect logs before recovery"
+    [[ ! -d /home/uosserver/.local/share/containers/storage ]] \
+        || fail partial_installation "An unfinished UniFi OS installation was found" \
+            "existing Podman storage without receipt; refusing to overwrite it"
+
+    echo "Installing UniFi OS ${version}. This can take several minutes."
+    # Create the runtime-dir tmpfs and user bus BEFORE taking the worker's
+    # private mount snapshot; later parent mount events will not propagate.
+    loginctl enable-linger uosserver
+    systemctl start "user@$(id -u uosserver).service"
+    install_vendor
+    # On subsequent boots, our receipt/version checks must run BEFORE the
+    # vendor units start. Disabling them does not stop the running services.
+    save_installation
+    echo "Installation saved. Legacy import is handled only by Ubiquiti's setup wizard."
+fi
+
+# Only a completed start may be checkpointed at shutdown.
+install -d -m 0700 /run/unifi-os-app
+: > /run/unifi-os-app/started
+alert --startup-complete

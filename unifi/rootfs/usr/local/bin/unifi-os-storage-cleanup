@@ -1,0 +1,29 @@
+#!/bin/bash
+set -euo pipefail
+
+state=$(systemctl is-system-running 2>/dev/null || true)
+case "${state}" in
+    starting|initializing|running|degraded|maintenance|stopping) ;;
+    *)
+        /usr/local/bin/unifi-os-runtime-storage invalidate
+        echo "Cannot establish shutdown state; checkpoint invalidated" >&2
+        exit 1
+        ;;
+esac
+if [[ "${state}" == stopping ]]; then
+    # Supervisor skips pre-hooks on stopped apps. Invalidate before any shutdown
+    # step that might fail, not only after successfully stopping Podman.
+    /usr/local/bin/unifi-os-runtime-storage invalidate
+fi
+
+# Supervisor's deletion helper lacks the capability to unlink another mapped
+# UID's files in this vendor-created sticky log directory. Clear only the
+# sticky bit after the nested service stops; keep all logs, owners and data.
+path=/home/uosserver/.local/share/containers/storage/volumes/uosserver_var_log/_data/postgresql
+if [[ -d "${path}" && ! -L "${path}" ]]; then
+    setpriv --reuid=uosserver --regid=uosserver --init-groups --inh-caps=-all chmod -t "${path}"
+fi
+
+# The separate shutdown-checkpoint unit runs after both vendor services stop.
+# Do not stop the updater synchronously here: vendor shutdown ordering requires
+# this server's ExecStopPost to finish before the updater can stop.

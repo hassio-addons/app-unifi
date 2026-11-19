@@ -1,0 +1,30 @@
+[Unit]
+Description=UniFi legacy port %i compatibility alias
+After=network.target
+
+[Service]
+ExecStart=/usr/local/bin/unifi-os-port-alias %i
+DynamicUser=yes
+NoNewPrivileges=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
+PrivateDevices=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=yes
+# Docker's read-only /proc/sys plus enforcing AppArmor protect tunables. The
+# redundant systemd sandbox self-binds /sys/kernel/debug, which the protected
+# subtree alias-denial policy deliberately rejects. This service has no caps.
+ProtectKernelTunables=no
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictNamespaces=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+SystemCallArchitectures=native
+LockPersonality=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+Restart=on-failure
+
+[Install]
+WantedBy=multi-user.target
